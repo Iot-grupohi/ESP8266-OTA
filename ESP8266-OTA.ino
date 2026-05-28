@@ -89,41 +89,46 @@ void checkForUpdate() {
   }
 
   Serial.println("[OTA] Verificando nova versão...");
+  Serial.printf("[OTA] Heap livre: %d bytes\n", ESP.getFreeHeap());
 
-  // 1) Baixa version.txt do release mais recente
-  WiFiClientSecure vClient;
-  vClient.setInsecure();
+  // Bloco isolado: o WiFiClientSecure é destruído ao sair,
+  // liberando ~30KB de heap antes de abrir o download
+  String latestVersion;
+  {
+    WiFiClientSecure vClient;
+    vClient.setInsecure();
+    vClient.setBufferSizes(512, 512); // reduz uso de RAM
 
-  HTTPClient http;
-  http.begin(vClient, VERSION_URL);
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(10000);
+    HTTPClient http;
+    http.begin(vClient, VERSION_URL);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setTimeout(10000);
 
-  int code = http.GET();
+    int code = http.GET();
 
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("[OTA] Erro ao obter version.txt: HTTP %d\n", code);
+    if (code != HTTP_CODE_OK) {
+      Serial.printf("[OTA] Erro ao obter version.txt: HTTP %d\n", code);
+      http.end();
+      return;
+    }
+
+    latestVersion = http.getString();
+    latestVersion.trim();
     http.end();
-    return;
-  }
-
-  String latestVersion = http.getString();
-  latestVersion.trim();
-  http.end();
+  } // vClient destruído aqui — heap liberado
 
   Serial.printf("[OTA] Versão atual: %s | Versão no repositório: %s\n",
                 FIRMWARE_VERSION, latestVersion.c_str());
 
-  // 2) Compara versões
   if (latestVersion == FIRMWARE_VERSION) {
     Serial.println("[OTA] Firmware já está atualizado.");
     return;
   }
 
-  // 3) Nova versão encontrada → aplica atualização
   Serial.printf("[OTA] Nova versão encontrada (%s). Atualizando...\n",
                 latestVersion.c_str());
 
+  delay(500); // garante que o heap se estabilize
   applyUpdate(FIRMWARE_URL);
 }
 
@@ -134,8 +139,11 @@ void checkForUpdate() {
 void applyUpdate(const String& url) {
   digitalWrite(LED_BUILTIN, LOW); // acende LED durante atualização
 
+  Serial.printf("[OTA] Heap livre antes do download: %d bytes\n", ESP.getFreeHeap());
+
   WiFiClientSecure fClient;
   fClient.setInsecure();
+  fClient.setBufferSizes(512, 512);
 
   HTTPClient http;
   http.begin(fClient, url);
