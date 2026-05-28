@@ -50,9 +50,9 @@ void loop() {
 
   // LED pisca a cada 5s
   digitalWrite(LED_BUILTIN, LOW);
-  delay(5000);
+  delay(500);
   digitalWrite(LED_BUILTIN, HIGH);
-  delay(5000);
+  delay(500);
 }
 
 // ============================================================
