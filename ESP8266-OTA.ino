@@ -140,6 +140,10 @@ void applyUpdate(const String& startUrl) {
   digitalWrite(LED_BUILTIN, LOW);
   Serial.printf("[OTA] Heap: %d bytes\n", ESP.getFreeHeap());
 
+  // Desabilita o WDT — Update.begin() apaga ~97 setores (~4s bloqueando CPU)
+  // e o Soft WDT dispara após 3.2s. O restart ao final reinicializa o WDT.
+  ESP.wdtDisable();
+
   // ── Fase 1: resolver URL final e obter tamanho ─────────────
   String cdnUrl = startUrl;
   int tamanho = -1;
@@ -179,6 +183,7 @@ void applyUpdate(const String& startUrl) {
 
   if (tamanho <= 0) {
     Serial.println("[OTA] Tamanho inválido. Abortando.");
+    ESP.wdtEnable(0);
     digitalWrite(LED_BUILTIN, HIGH);
     return;
   }
@@ -187,6 +192,7 @@ void applyUpdate(const String& startUrl) {
   Serial.println("[OTA] Preparando flash...");
   if (!Update.begin(tamanho)) {
     Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
+    ESP.wdtEnable(0);
     digitalWrite(LED_BUILTIN, HIGH);
     return;
   }
@@ -206,6 +212,7 @@ void applyUpdate(const String& startUrl) {
   if (code != HTTP_CODE_OK) {
     Serial.printf("[OTA] Falha na conexão ao CDN: HTTP %d\n", code);
     http.end();
+    ESP.wdtEnable(0);
     digitalWrite(LED_BUILTIN, HIGH);
     return;
   }
@@ -250,6 +257,7 @@ void applyUpdate(const String& startUrl) {
   if (!Update.end(true)) {
     Serial.printf("[OTA] Erro ao finalizar: %s\n", Update.getErrorString().c_str());
     http.end();
+    ESP.wdtEnable(0);
     digitalWrite(LED_BUILTIN, HIGH);
     return;
   }
