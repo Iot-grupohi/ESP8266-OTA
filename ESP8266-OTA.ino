@@ -154,8 +154,8 @@ void applyUpdate(const String& startUrl) {
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     http.setTimeout(30000);
     http.addHeader("Accept-Encoding", "identity");
-    const char* hdrs[] = { "Location", "Content-Type" };
-    http.collectHeaders(hdrs, 2);
+    const char* hdrs[] = { "Location", "Content-Type", "Transfer-Encoding" };
+    http.collectHeaders(hdrs, 3);
 
     int code = http.GET();
 
@@ -185,9 +185,10 @@ void applyUpdate(const String& startUrl) {
     }
 
     // 200 OK — conexão direta ao CDN, stream limpo
-    Serial.printf("[OTA] Content-Type: %s\n", http.header("Content-Type").c_str());
+    Serial.printf("[OTA] Content-Type: %s\n",        http.header("Content-Type").c_str());
+    Serial.printf("[OTA] Transfer-Encoding: '%s'\n", http.header("Transfer-Encoding").c_str());
     int tamanho = http.getSize();
-    Serial.printf("[OTA] Tamanho do firmware: %d bytes\n", tamanho);
+    Serial.printf("[OTA] Tamanho: %d bytes\n", tamanho);
 
     if (!Update.begin(tamanho > 0 ? tamanho : UPDATE_SIZE_UNKNOWN)) {
       Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
@@ -198,7 +199,29 @@ void applyUpdate(const String& startUrl) {
 
     WiFiClient* stream = http.getStreamPtr();
     stream->setTimeout(30000);
-    size_t gravados = Update.writeStream(*stream);
+
+    // Lê os primeiros 4 bytes manualmente para diagnóstico
+    uint8_t firstBytes[4] = {0, 0, 0, 0};
+    unsigned long tWait = millis();
+    int idx = 0;
+    while (idx < 4 && millis() - tWait < 5000) {
+      if (stream->available()) {
+        firstBytes[idx++] = (uint8_t)stream->read();
+      } else {
+        yield();
+      }
+    }
+    Serial.printf("[OTA] Primeiros bytes: %02X %02X %02X %02X\n",
+                  firstBytes[0], firstBytes[1], firstBytes[2], firstBytes[3]);
+
+    // Grava os 4 bytes já lidos, depois continua com o resto do stream
+    if (Update.write(firstBytes, 4) != 4) {
+      Serial.println("[OTA] Erro ao gravar primeiros bytes");
+      http.end();
+      digitalWrite(LED_BUILTIN, HIGH);
+      return;
+    }
+    size_t gravados = 4 + Update.writeStream(*stream);
 
     if (!Update.end(true)) {
       Serial.printf("[OTA] Erro ao finalizar: %s\n",
