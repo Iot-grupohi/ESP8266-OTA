@@ -6,8 +6,8 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
 #include <WiFiClientSecure.h>
+#include <Updater.h>
 
 #include "config.h"
 #include "version.h"
@@ -22,6 +22,7 @@ unsigned long lastCheckMs = 0;
 // ---------- protótipos ----------
 void connectWiFi();
 void checkForUpdate();
+void applyUpdate(const String& url);
 
 // ================================
 void setup() {
@@ -75,7 +76,7 @@ void connectWiFi() {
 }
 
 // ============================================================
-//  Verificação e aplicação de atualização OTA
+//  Verificação de atualização OTA
 // ============================================================
 void checkForUpdate() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -87,8 +88,7 @@ void checkForUpdate() {
 
   // 1) Baixa version.txt do release mais recente
   WiFiClientSecure vClient;
-  vClient.setInsecure(); // desativa verificação de certificado
-                          // substitua por vClient.setFingerprint() em produção
+  vClient.setInsecure();
 
   HTTPClient http;
   http.begin(vClient, VERSION_URL);
@@ -116,35 +116,61 @@ void checkForUpdate() {
     return;
   }
 
-  // 3) Nova versão encontrada → baixa e grava firmware
+  // 3) Nova versão encontrada → aplica atualização
   Serial.printf("[OTA] Nova versão encontrada (%s). Atualizando...\n",
                 latestVersion.c_str());
 
+  applyUpdate(FIRMWARE_URL);
+}
+
+// ============================================================
+//  Download e gravação do firmware via HTTPClient + Updater
+//  (suporta redirecionamentos entre domínios — ex: GitHub CDN)
+// ============================================================
+void applyUpdate(const String& url) {
   digitalWrite(LED_BUILTIN, LOW); // acende LED durante atualização
 
   WiFiClientSecure fClient;
   fClient.setInsecure();
 
-  ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
-  ESPhttpUpdate.rebootOnUpdate(true);
-  ESPhttpUpdate.followRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  HTTPClient http;
+  http.begin(fClient, url);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(30000);
 
-  t_httpUpdate_return resultado = ESPhttpUpdate.update(fClient, FIRMWARE_URL);
+  int code = http.GET();
 
-  // Só chega aqui se rebootOnUpdate = false ou se houve erro
-  switch (resultado) {
-    case HTTP_UPDATE_FAILED:
-      Serial.printf("[OTA] Falha: (%d) %s\n",
-                    ESPhttpUpdate.getLastError(),
-                    ESPhttpUpdate.getLastErrorString().c_str());
-      break;
-    case HTTP_UPDATE_NO_UPDATES:
-      Serial.println("[OTA] Nenhuma atualização disponível.");
-      break;
-    case HTTP_UPDATE_OK:
-      Serial.println("[OTA] Atualização concluída. Reiniciando...");
-      break;
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[OTA] Falha no download: HTTP %d\n", code);
+    http.end();
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
   }
 
-  digitalWrite(LED_BUILTIN, HIGH);
+  int tamanho = http.getSize(); // -1 se desconhecido
+  Serial.printf("[OTA] Tamanho do firmware: %d bytes\n", tamanho);
+
+  if (!Update.begin(tamanho > 0 ? tamanho : UPDATE_SIZE_UNKNOWN)) {
+    Serial.printf("[OTA] Sem espaço para gravar: %s\n", Update.errorString());
+    http.end();
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
+
+  // Grava o stream diretamente na flash
+  WiFiClient* stream = http.getStreamPtr();
+  size_t gravados = Update.writeStream(*stream);
+
+  if (!Update.end()) {
+    Serial.printf("[OTA] Erro ao finalizar gravação: %s\n", Update.errorString());
+    http.end();
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
+
+  Serial.printf("[OTA] %d bytes gravados. Reiniciando...\n", gravados);
+  http.end();
+
+  delay(500);
+  ESP.restart();
 }
