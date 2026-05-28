@@ -176,17 +176,8 @@ void applyUpdate(const String& url) {
     return;
   }
 
-  // Lê primeiros bytes para diagnóstico e depois grava via writeStream
   WiFiClient* stream = http.getStreamPtr();
-
-  // Aguarda os primeiros bytes estarem disponíveis
-  unsigned long t = millis();
-  while (stream->available() < 4 && millis() - t < 5000) delay(10);
-
-  uint8_t magic[4];
-  stream->peekBytes(magic, 4);
-  Serial.printf("[OTA] Primeiros bytes: %02X %02X %02X %02X\n",
-                magic[0], magic[1], magic[2], magic[3]);
+  stream->setTimeout(30000);
 
   size_t gravados = Update.writeStream(*stream);
 
