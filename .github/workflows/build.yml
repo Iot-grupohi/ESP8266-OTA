@@ -37,7 +37,7 @@ jobs:
       - name: Verificar versão em version.h
         run: |
           TAG_VERSION="${{ steps.version.outputs.VERSION }}"
-          FILE_VERSION=$(grep -oP '(?<=FIRMWARE_VERSION ")[^"]+' version.h)
+          FILE_VERSION=$(grep -oP '^#define FIRMWARE_VERSION "\K[^"]+' version.h)
           if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
             echo "❌  Tag v$TAG_VERSION ≠ version.h ($FILE_VERSION)"
             echo "     Atualize FIRMWARE_VERSION em version.h antes de criar a tag."
