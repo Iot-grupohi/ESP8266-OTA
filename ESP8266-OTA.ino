@@ -132,108 +132,83 @@ void checkForUpdate() {
 }
 
 // ============================================================
-//  Download e gravação do firmware — duas fases:
-//  Fase 1: resolve URL do CDN e obtém tamanho, fecha conexão
-//  Fase 2: apaga flash (Update.begin), abre nova conexão e grava
+//  Download e gravação do firmware
+//  - Uma única conexão SSL com HTTPC_STRICT_FOLLOW_REDIRECTS
+//  - WDT desabilitado antes do Update.begin() (~4s de apagamento)
+//  - Loop manual para download (WiFiClient::readBytes() não bloqueia)
 // ============================================================
-void applyUpdate(const String& startUrl) {
+void applyUpdate(const String& url) {
   digitalWrite(LED_BUILTIN, LOW);
   Serial.printf("[OTA] Heap: %d bytes\n", ESP.getFreeHeap());
 
-  // Desabilita o WDT — Update.begin() apaga ~97 setores (~4s bloqueando CPU)
-  // e o Soft WDT dispara após 3.2s. O restart ao final reinicializa o WDT.
+  // SSL + redirect + apagamento de flash bloqueiam a CPU por >6s.
+  // Desabilita WDT ANTES de qualquer operação longa (GET ou Update.begin).
   ESP.wdtDisable();
 
-  // ── Fase 1: resolver URL final e obter tamanho ─────────────
-  String cdnUrl = startUrl;
-  int tamanho = -1;
-
-  for (int hop = 0; hop < 6; hop++) {
-    WiFiClientSecure c;
-    c.setInsecure();
-    HTTPClient h;
-    h.begin(c, cdnUrl);
-    h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    h.setTimeout(15000);
-    h.addHeader("Accept-Encoding", "identity");
-    const char* hdrs[] = { "Location" };
-    h.collectHeaders(hdrs, 1);
-
-    int code = h.GET();
-
-    if (code == 301 || code == 302 || code == 303 ||
-        code == 307 || code == 308) {
-      String loc = h.header("Location");
-      h.end();
-      if (loc.isEmpty()) break;
-      cdnUrl = loc;
-      Serial.printf("[OTA] Redirect %d\n", hop + 1);
-      continue;
-    }
-
-    if (code == HTTP_CODE_OK) {
-      tamanho = h.getSize();
-      Serial.printf("[OTA] CDN URL obtida. Tamanho: %d bytes\n", tamanho);
-    } else {
-      Serial.printf("[OTA] Erro HTTP: %d\n", code);
-    }
-    h.end(); // fecha conexão ANTES do apagamento do flash
-    break;
-  }
-
-  if (tamanho <= 0) {
-    Serial.println("[OTA] Tamanho inválido. Abortando.");
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
-    return;
-  }
-
-  // ── Fase 2: apagar flash (conexão já fechada) ───────────────
-  Serial.println("[OTA] Preparando flash...");
-  if (!Update.begin(tamanho)) {
-    Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
-    return;
-  }
-  Serial.println("[OTA] Flash pronto. Conectando ao CDN...");
-
-  // ── Fase 3: nova conexão ao CDN e gravação ──────────────────
   WiFiClientSecure fClient;
   fClient.setInsecure();
 
   HTTPClient http;
-  http.begin(fClient, cdnUrl);
-  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+  http.begin(fClient, url);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(30000);
   http.addHeader("Accept-Encoding", "identity");
 
+  Serial.println("[OTA] Conectando ao CDN...");
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    Serial.printf("[OTA] Falha na conexão ao CDN: HTTP %d\n", code);
+    Serial.printf("[OTA] Falha HTTP: %d\n", code);
     http.end();
     ESP.wdtEnable(0);
     digitalWrite(LED_BUILTIN, HIGH);
     return;
   }
 
-  WiFiClient* stream = http.getStreamPtr();
+  int tamanho = http.getSize();
+  Serial.printf("[OTA] Tamanho: %d bytes\n", tamanho);
+  if (tamanho <= 0) {
+    Serial.println("[OTA] Tamanho inválido.");
+    http.end();
+    ESP.wdtEnable(0);
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
 
-  // Loop manual com espera ativa — WiFiClient::readBytes() retorna
-  // imediatamente sem esperar dados, então precisamos de controle próprio
-  const size_t CHUNK = 2048;
-  uint8_t buf[CHUNK];
+  // Apaga setores sob demanda durante o write — evita ~4s bloqueando
+  // com a conexão HTTPS já aberta (CDN fecha se demorar demais).
+  if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+    Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
+    http.end();
+    ESP.wdtEnable(0);
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
+
+  Serial.println("[OTA] Flash pronto. Baixando...");
+
+  WiFiClient* stream = http.getStreamPtr();
+  const size_t CHUNK = 1024;
+  uint8_t* buf = (uint8_t*)malloc(CHUNK);
+  if (!buf) {
+    Serial.println("[OTA] Sem memória para buffer.");
+    Update.end(true);
+    http.end();
+    ESP.wdtEnable(0);
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
+
   size_t gravados = 0;
   unsigned long ultimoDado = millis();
 
   while (gravados < (size_t)tamanho) {
-    ESP.wdtFeed(); // reset watchdog a cada iteração
+    yield();
 
     size_t disponivel = stream->available();
-
     if (disponivel == 0) {
+      if (!stream->connected() && gravados >= (size_t)tamanho) break;
       if (millis() - ultimoDado > 30000) {
-        Serial.printf("[OTA] Timeout! Gravados: %d/%d\n", gravados, tamanho);
+        Serial.printf("[OTA] Timeout! %d/%d bytes\n", gravados, tamanho);
         break;
       }
       delay(1);
@@ -242,17 +217,31 @@ void applyUpdate(const String& startUrl) {
 
     ultimoDado = millis();
     size_t lido = stream->read(buf,
-                               min(disponivel, min(CHUNK, tamanho - gravados)));
+                  min(disponivel, min(CHUNK, (size_t)tamanho - gravados)));
     if (lido == 0) continue;
 
     if (Update.write(buf, lido) != lido) {
-      Serial.printf("[OTA] Erro ao gravar no flash\n");
+      Serial.println("[OTA] Erro ao gravar no flash");
       break;
     }
     gravados += lido;
+
+    if (gravados % 16384 == 0) {
+      Serial.printf("[OTA] %d/%d bytes\n", gravados, tamanho);
+    }
   }
 
+  free(buf);
   Serial.printf("[OTA] Gravados: %d de %d bytes\n", gravados, tamanho);
+
+  if (gravados != (size_t)tamanho) {
+    Serial.println("[OTA] Download incompleto.");
+    Update.end(true);
+    http.end();
+    ESP.wdtEnable(0);
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
 
   if (!Update.end(true)) {
     Serial.printf("[OTA] Erro ao finalizar: %s\n", Update.getErrorString().c_str());
@@ -262,7 +251,7 @@ void applyUpdate(const String& startUrl) {
     return;
   }
 
-  Serial.printf("[OTA] %d bytes gravados. Reiniciando...\n", gravados);
+  Serial.println("[OTA] Sucesso! Reiniciando...");
   http.end();
   delay(500);
   ESP.restart();
