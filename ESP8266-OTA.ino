@@ -9,6 +9,10 @@
 #include <WiFiClientSecure.h>
 #include <Updater.h>
 
+#ifndef UPDATE_SIZE_UNKNOWN
+  #define UPDATE_SIZE_UNKNOWN 0xFFFFFFFF
+#endif
+
 #include "config.h"
 #include "version.h"
 
@@ -151,7 +155,7 @@ void applyUpdate(const String& url) {
   Serial.printf("[OTA] Tamanho do firmware: %d bytes\n", tamanho);
 
   if (!Update.begin(tamanho > 0 ? tamanho : UPDATE_SIZE_UNKNOWN)) {
-    Serial.printf("[OTA] Sem espaço para gravar: %s\n", Update.errorString());
+    Serial.printf("[OTA] Sem espaço para gravar: %s\n", Update.getErrorString().c_str());
     http.end();
     digitalWrite(LED_BUILTIN, HIGH);
     return;
@@ -162,7 +166,7 @@ void applyUpdate(const String& url) {
   size_t gravados = Update.writeStream(*stream);
 
   if (!Update.end()) {
-    Serial.printf("[OTA] Erro ao finalizar gravação: %s\n", Update.errorString());
+    Serial.printf("[OTA] Erro ao finalizar gravação: %s\n", Update.getErrorString().c_str());
     http.end();
     digitalWrite(LED_BUILTIN, HIGH);
     return;
