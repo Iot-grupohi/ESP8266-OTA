@@ -176,37 +176,19 @@ void applyUpdate(const String& url) {
     return;
   }
 
-  // Grava em blocos para evitar corrupção com streams redirecionados
+  // Lê primeiros bytes para diagnóstico e depois grava via writeStream
   WiFiClient* stream = http.getStreamPtr();
-  uint8_t buf[512];
-  size_t gravados = 0;
-  int semDados = 0;
-  bool primeiroBloco = true;
 
-  while (http.connected() && (tamanho == -1 || gravados < (size_t)tamanho)) {
-    size_t disponivel = stream->available();
-    if (disponivel == 0) {
-      if (++semDados > 100) break; // timeout ~1s
-      delay(10);
-      continue;
-    }
-    semDados = 0;
-    size_t lido = stream->readBytes(buf, min(disponivel, sizeof(buf)));
+  // Aguarda os primeiros bytes estarem disponíveis
+  unsigned long t = millis();
+  while (stream->available() < 4 && millis() - t < 5000) delay(10);
 
-    if (primeiroBloco) {
-      primeiroBloco = false;
-      Serial.printf("[OTA] Primeiros bytes: %02X %02X %02X %02X\n",
-                    buf[0], buf[1], buf[2], buf[3]);
-    }
+  uint8_t magic[4];
+  stream->peekBytes(magic, 4);
+  Serial.printf("[OTA] Primeiros bytes: %02X %02X %02X %02X\n",
+                magic[0], magic[1], magic[2], magic[3]);
 
-    if (Update.write(buf, lido) != lido) {
-      Serial.printf("[OTA] Erro na gravação: %s\n", Update.getErrorString().c_str());
-      http.end();
-      digitalWrite(LED_BUILTIN, HIGH);
-      return;
-    }
-    gravados += lido;
-  }
+  size_t gravados = Update.writeStream(*stream);
 
   if (!Update.end(true)) {
     Serial.printf("[OTA] Erro ao finalizar: %s\n", Update.getErrorString().c_str());
