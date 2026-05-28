@@ -170,12 +170,32 @@ void applyUpdate(const String& url) {
     return;
   }
 
-  // Grava o stream diretamente na flash
+  // Grava em blocos para evitar corrupção com streams redirecionados
   WiFiClient* stream = http.getStreamPtr();
-  size_t gravados = Update.writeStream(*stream);
+  uint8_t buf[512];
+  size_t gravados = 0;
+  int semDados = 0;
 
-  if (!Update.end()) {
-    Serial.printf("[OTA] Erro ao finalizar gravação: %s\n", Update.getErrorString().c_str());
+  while (http.connected() && (tamanho == -1 || gravados < (size_t)tamanho)) {
+    size_t disponivel = stream->available();
+    if (disponivel == 0) {
+      if (++semDados > 100) break; // timeout ~1s
+      delay(10);
+      continue;
+    }
+    semDados = 0;
+    size_t lido = stream->readBytes(buf, min(disponivel, sizeof(buf)));
+    if (Update.write(buf, lido) != lido) {
+      Serial.printf("[OTA] Erro na gravação: %s\n", Update.getErrorString().c_str());
+      http.end();
+      digitalWrite(LED_BUILTIN, HIGH);
+      return;
+    }
+    gravados += lido;
+  }
+
+  if (!Update.end(true)) {
+    Serial.printf("[OTA] Erro ao finalizar: %s\n", Update.getErrorString().c_str());
     http.end();
     digitalWrite(LED_BUILTIN, HIGH);
     return;

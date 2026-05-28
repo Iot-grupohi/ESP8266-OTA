@@ -64,7 +64,18 @@ jobs:
           cp build/ESP8266-OTA.ino.bin firmware.bin
           echo "${{ steps.version.outputs.VERSION }}" > version.txt
 
-      # 8) Cria o release e faz upload dos assets
+      # 8) Verifica se o binário é um firmware ESP8266 válido (magic byte 0xE9)
+      - name: Verificar magic byte do firmware
+        run: |
+          MAGIC=$(xxd -p -l 1 firmware.bin)
+          echo "Magic byte: 0x$MAGIC"
+          if [ "$MAGIC" != "e9" ]; then
+            echo "❌ Binário inválido — esperado 0xe9, encontrado 0x$MAGIC"
+            exit 1
+          fi
+          echo "✅ Firmware válido"
+
+      # 9) Cria o release e faz upload dos assets
       - name: Criar Release no GitHub
         uses: softprops/action-gh-release@v2
         with:
