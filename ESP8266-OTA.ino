@@ -220,6 +220,8 @@ void applyUpdate(const String& startUrl) {
   unsigned long ultimoDado = millis();
 
   while (gravados < (size_t)tamanho) {
+    ESP.wdtFeed(); // reset watchdog a cada iteração
+
     size_t disponivel = stream->available();
 
     if (disponivel == 0) {
@@ -227,7 +229,7 @@ void applyUpdate(const String& startUrl) {
         Serial.printf("[OTA] Timeout! Gravados: %d/%d\n", gravados, tamanho);
         break;
       }
-      yield();
+      delay(1);
       continue;
     }
 
