@@ -132,94 +132,99 @@ void checkForUpdate() {
 }
 
 // ============================================================
-//  Download e gravação do firmware
-//  Segue redirecionamentos manualmente para garantir stream
-//  limpo — HTTPC_STRICT_FOLLOW_REDIRECTS contamina o stream
-//  com bytes do corpo HTML das respostas de redirect.
+//  Download e gravação do firmware — duas fases:
+//  Fase 1: resolve URL do CDN e obtém tamanho, fecha conexão
+//  Fase 2: apaga flash (Update.begin), abre nova conexão e grava
 // ============================================================
 void applyUpdate(const String& startUrl) {
   digitalWrite(LED_BUILTIN, LOW);
-  Serial.printf("[OTA] Heap livre antes do download: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("[OTA] Heap: %d bytes\n", ESP.getFreeHeap());
 
-  String url = startUrl;
+  // ── Fase 1: resolver URL final e obter tamanho ─────────────
+  String cdnUrl = startUrl;
+  int tamanho = -1;
 
   for (int hop = 0; hop < 6; hop++) {
+    WiFiClientSecure c;
+    c.setInsecure();
+    HTTPClient h;
+    h.begin(c, cdnUrl);
+    h.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    h.setTimeout(15000);
+    h.addHeader("Accept-Encoding", "identity");
+    const char* hdrs[] = { "Location" };
+    h.collectHeaders(hdrs, 1);
 
-    // Cada iteração cria objetos novos — sem estado residual entre hops
-    WiFiClientSecure fClient;
-    fClient.setInsecure();
+    int code = h.GET();
 
-    HTTPClient http;
-    http.begin(fClient, url);
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.setTimeout(30000);
-    http.addHeader("Accept-Encoding", "identity");
-    const char* hdrs[] = { "Location", "Content-Type", "Transfer-Encoding" };
-    http.collectHeaders(hdrs, 3);
-
-    int code = http.GET();
-
-    // Redirecionar: salva nova URL, fecha conexão e repete
     if (code == 301 || code == 302 || code == 303 ||
         code == 307 || code == 308) {
-      String loc = http.header("Location");
-      http.end();
-      // fClient e http destruídos ao sair do escopo → sem vazamento
-      if (loc.isEmpty()) {
-        Serial.println("[OTA] Redirect sem Location header.");
-        digitalWrite(LED_BUILTIN, HIGH);
-        return;
-      }
-      url = loc;
-      Serial.printf("[OTA] Redirect %d → %s...\n", hop + 1,
-                    url.substring(0, 60).c_str());
+      String loc = h.header("Location");
+      h.end();
+      if (loc.isEmpty()) break;
+      cdnUrl = loc;
+      Serial.printf("[OTA] Redirect %d\n", hop + 1);
       continue;
     }
 
-    // Erro HTTP
-    if (code != HTTP_CODE_OK) {
-      Serial.printf("[OTA] Falha no download: HTTP %d\n", code);
-      http.end();
-      digitalWrite(LED_BUILTIN, HIGH);
-      return;
+    if (code == HTTP_CODE_OK) {
+      tamanho = h.getSize();
+      Serial.printf("[OTA] CDN URL obtida. Tamanho: %d bytes\n", tamanho);
+    } else {
+      Serial.printf("[OTA] Erro HTTP: %d\n", code);
     }
+    h.end(); // fecha conexão ANTES do apagamento do flash
+    break;
+  }
 
-    // 200 OK — conexão direta ao CDN, stream limpo
-    Serial.printf("[OTA] Content-Type: %s\n",        http.header("Content-Type").c_str());
-    Serial.printf("[OTA] Transfer-Encoding: '%s'\n", http.header("Transfer-Encoding").c_str());
-    int tamanho = http.getSize();
-    Serial.printf("[OTA] Tamanho: %d bytes\n", tamanho);
-
-    // UPDATE_SIZE_UNKNOWN: apaga setores sob demanda durante a gravação
-    // evita ~4s de apagamento prévio que fecha a conexão com o CDN
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-      Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
-      http.end();
-      digitalWrite(LED_BUILTIN, HIGH);
-      return;
-    }
-
-    WiFiClient* stream = http.getStreamPtr();
-    stream->setTimeout(30000);
-
-    size_t gravados = Update.writeStream(*stream);
-    Serial.printf("[OTA] writeStream: %d de %d bytes\n", gravados, tamanho);
-
-    if (!Update.end(true)) {
-      Serial.printf("[OTA] Erro ao finalizar: %s\n",
-                    Update.getErrorString().c_str());
-      http.end();
-      digitalWrite(LED_BUILTIN, HIGH);
-      return;
-    }
-
-    Serial.printf("[OTA] %d bytes gravados. Reiniciando...\n", gravados);
-    http.end();
-    delay(500);
-    ESP.restart();
+  if (tamanho <= 0) {
+    Serial.println("[OTA] Tamanho inválido. Abortando.");
+    digitalWrite(LED_BUILTIN, HIGH);
     return;
   }
 
-  Serial.println("[OTA] Erro: muitos redirecionamentos.");
-  digitalWrite(LED_BUILTIN, HIGH);
+  // ── Fase 2: apagar flash (conexão já fechada) ───────────────
+  Serial.println("[OTA] Preparando flash...");
+  if (!Update.begin(tamanho)) {
+    Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
+  Serial.println("[OTA] Flash pronto. Conectando ao CDN...");
+
+  // ── Fase 3: nova conexão ao CDN e gravação ──────────────────
+  WiFiClientSecure fClient;
+  fClient.setInsecure();
+
+  HTTPClient http;
+  http.begin(fClient, cdnUrl);
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+  http.setTimeout(30000);
+  http.addHeader("Accept-Encoding", "identity");
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[OTA] Falha na conexão ao CDN: HTTP %d\n", code);
+    http.end();
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
+
+  WiFiClient* stream = http.getStreamPtr();
+  stream->setTimeout(30000);
+
+  size_t gravados = Update.writeStream(*stream);
+  Serial.printf("[OTA] writeStream: %d de %d bytes\n", gravados, tamanho);
+
+  if (!Update.end(true)) {
+    Serial.printf("[OTA] Erro ao finalizar: %s\n", Update.getErrorString().c_str());
+    http.end();
+    digitalWrite(LED_BUILTIN, HIGH);
+    return;
+  }
+
+  Serial.printf("[OTA] %d bytes gravados. Reiniciando...\n", gravados);
+  http.end();
+  delay(500);
+  ESP.restart();
 }
