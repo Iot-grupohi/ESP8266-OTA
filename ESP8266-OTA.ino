@@ -50,9 +50,9 @@ void loop() {
 
   // LED pisca a cada 500 ms
   digitalWrite(LED_BUILTIN, LOW);
-  delay(5000);
+  delay(500);
   digitalWrite(LED_BUILTIN, HIGH);
-  delay(5000);
+  delay(500);
 }
 
 // ============================================================
@@ -97,7 +97,6 @@ void checkForUpdate() {
   {
     WiFiClientSecure vClient;
     vClient.setInsecure();
-    vClient.setBufferSizes(512, 512); // reduz uso de RAM
 
     HTTPClient http;
     http.begin(vClient, VERSION_URL);
