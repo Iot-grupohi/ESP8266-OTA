@@ -211,10 +211,39 @@ void applyUpdate(const String& startUrl) {
   }
 
   WiFiClient* stream = http.getStreamPtr();
-  stream->setTimeout(30000);
 
-  size_t gravados = Update.writeStream(*stream);
-  Serial.printf("[OTA] writeStream: %d de %d bytes\n", gravados, tamanho);
+  // Loop manual com espera ativa — WiFiClient::readBytes() retorna
+  // imediatamente sem esperar dados, então precisamos de controle próprio
+  const size_t CHUNK = 2048;
+  uint8_t buf[CHUNK];
+  size_t gravados = 0;
+  unsigned long ultimoDado = millis();
+
+  while (gravados < (size_t)tamanho) {
+    size_t disponivel = stream->available();
+
+    if (disponivel == 0) {
+      if (millis() - ultimoDado > 30000) {
+        Serial.printf("[OTA] Timeout! Gravados: %d/%d\n", gravados, tamanho);
+        break;
+      }
+      yield();
+      continue;
+    }
+
+    ultimoDado = millis();
+    size_t lido = stream->read(buf,
+                               min(disponivel, min(CHUNK, tamanho - gravados)));
+    if (lido == 0) continue;
+
+    if (Update.write(buf, lido) != lido) {
+      Serial.printf("[OTA] Erro ao gravar no flash\n");
+      break;
+    }
+    gravados += lido;
+  }
+
+  Serial.printf("[OTA] Gravados: %d de %d bytes\n", gravados, tamanho);
 
   if (!Update.end(true)) {
     Serial.printf("[OTA] Erro ao finalizar: %s\n", Update.getErrorString().c_str());
