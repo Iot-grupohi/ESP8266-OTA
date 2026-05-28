@@ -1,0 +1,78 @@
+name: Build & Release Firmware
+
+# Dispara ao criar uma tag como "v1.0.0"
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1) Checkout do repositório
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2) Instala o arduino-cli
+      - name: Instalar arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      # 3) Adiciona o índice de placas do ESP8266
+      - name: Configurar índice de placas
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://arduino.esp8266.com/stable/package_esp8266com_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp8266:esp8266
+
+      # 4) Extrai a versão da tag (remove o "v" inicial)
+      - name: Extrair versão
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # 5) Garante que version.h está sincronizado com a tag
+      - name: Verificar versão em version.h
+        run: |
+          TAG_VERSION="${{ steps.version.outputs.VERSION }}"
+          FILE_VERSION=$(grep -oP '(?<=FIRMWARE_VERSION ")[^"]+' version.h)
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "❌  Tag v$TAG_VERSION ≠ version.h ($FILE_VERSION)"
+            echo "     Atualize FIRMWARE_VERSION em version.h antes de criar a tag."
+            exit 1
+          fi
+          echo "✅  Versão $TAG_VERSION OK"
+
+      # 6) Compila o sketch
+      - name: Compilar firmware
+        run: |
+          arduino-cli compile \
+            --fqbn esp8266:esp8266:nodemcuv2 \
+            --output-dir build \
+            ESP8266-OTA.ino
+
+      # 7) Renomeia para firmware.bin e cria version.txt
+      - name: Preparar assets
+        run: |
+          cp build/ESP8266-OTA.ino.bin firmware.bin
+          echo "${{ steps.version.outputs.VERSION }}" > version.txt
+
+      # 8) Cria o release e faz upload dos assets
+      - name: Criar Release no GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Firmware ${{ github.ref_name }}"
+          body: |
+            ## Firmware ${{ github.ref_name }}
+            
+            Arquivos disponíveis:
+            - `firmware.bin` — binário para gravação OTA
+            - `version.txt`  — versão atual (`${{ steps.version.outputs.VERSION }}`)
+          files: |
+            firmware.bin
+            version.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
