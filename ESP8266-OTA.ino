@@ -48,11 +48,11 @@ void loop() {
     checkForUpdate();
   }
 
-  // LED pisca a cada 500 ms
+  // LED pisca a cada 5s
   digitalWrite(LED_BUILTIN, LOW);
-  delay(500);
+  delay(5000);
   digitalWrite(LED_BUILTIN, HIGH);
-  delay(500);
+  delay(5000);
 }
 
 // ============================================================
