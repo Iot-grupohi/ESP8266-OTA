@@ -190,6 +190,9 @@ void applyUpdate(const String& startUrl) {
     int tamanho = http.getSize();
     Serial.printf("[OTA] Tamanho: %d bytes\n", tamanho);
 
+    // Limpa qualquer estado anterior do Update
+    if (Update.isRunning()) Update.abort();
+
     if (!Update.begin(tamanho > 0 ? tamanho : UPDATE_SIZE_UNKNOWN)) {
       Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
       http.end();
@@ -200,28 +203,8 @@ void applyUpdate(const String& startUrl) {
     WiFiClient* stream = http.getStreamPtr();
     stream->setTimeout(30000);
 
-    // Lê os primeiros 4 bytes manualmente para diagnóstico
-    uint8_t firstBytes[4] = {0, 0, 0, 0};
-    unsigned long tWait = millis();
-    int idx = 0;
-    while (idx < 4 && millis() - tWait < 5000) {
-      if (stream->available()) {
-        firstBytes[idx++] = (uint8_t)stream->read();
-      } else {
-        yield();
-      }
-    }
-    Serial.printf("[OTA] Primeiros bytes: %02X %02X %02X %02X\n",
-                  firstBytes[0], firstBytes[1], firstBytes[2], firstBytes[3]);
-
-    // Grava os 4 bytes já lidos, depois continua com o resto do stream
-    if (Update.write(firstBytes, 4) != 4) {
-      Serial.println("[OTA] Erro ao gravar primeiros bytes");
-      http.end();
-      digitalWrite(LED_BUILTIN, HIGH);
-      return;
-    }
-    size_t gravados = 4 + Update.writeStream(*stream);
+    size_t gravados = Update.writeStream(*stream);
+    Serial.printf("[OTA] writeStream: %d de %d bytes\n", gravados, tamanho);
 
     if (!Update.end(true)) {
       Serial.printf("[OTA] Erro ao finalizar: %s\n",
