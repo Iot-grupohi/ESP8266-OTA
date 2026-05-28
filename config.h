@@ -9,11 +9,15 @@
 #define WIFI_PASSWORD   "@1L2S3C@"
 
 // --- Repositório GitHub ---
-//   O firmware.bin e version.txt devem ser assets do release
-//   Exemplo: https://github.com/joao/ESP8266-OTA/releases/latest/download/firmware.bin
 #define GITHUB_USER     "Iot-grupohi"
 #define GITHUB_REPO     "ESP8266-OTA"
 
-// --- Intervalo de verificação de atualização ---
-//   Padrão: 30 minutos (em milissegundos)
-#define OTA_CHECK_INTERVAL_MS  (30UL * 60UL * 1000UL)
+// --- OTA ---
+#define OTA_CHECK_INTERVAL_MS   (30UL * 60UL * 1000UL)  // 30 min
+#define OTA_HTTP_TIMEOUT_MS     30000
+#define OTA_DOWNLOAD_TIMEOUT_MS 30000
+#define OTA_CHUNK_SIZE          1024
+#define OTA_PROGRESS_BYTES      32768
+
+// --- LED (active low) ---
+#define LED_BLINK_INTERVAL_MS   5000

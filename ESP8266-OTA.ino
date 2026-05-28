@@ -1,7 +1,5 @@
 // ============================================================
 //  ESP8266 OTA via GitHub Releases
-//  Fluxo: dispositivo verifica version.txt no release mais
-//  recente e, se diferente da versão local, baixa firmware.bin
 // ============================================================
 
 #include <ESP8266WiFi.h>
@@ -16,17 +14,20 @@
 #include "config.h"
 #include "version.h"
 
-// URLs montadas a partir das configurações em config.h
 #define GH_BASE      "https://github.com/" GITHUB_USER "/" GITHUB_REPO "/releases/latest/download"
 #define VERSION_URL  GH_BASE "/version.txt"
 #define FIRMWARE_URL GH_BASE "/firmware.bin"
 
-unsigned long lastCheckMs = 0;
+static uint8_t otaBuffer[OTA_CHUNK_SIZE];
+static unsigned long lastCheckMs = 0;
+static unsigned long lastLedMs   = 0;
 
 // ---------- protótipos ----------
 void connectWiFi();
 void checkForUpdate();
-void applyUpdate(const String& url);
+bool fetchText(const char* url, String& out, uint16_t timeoutMs);
+void applyUpdate(const char* url);
+void otaAbort(HTTPClient* http, bool cancelUpdate = false);
 
 // ================================
 void setup() {
@@ -36,34 +37,41 @@ void setup() {
   Serial.printf("\n\n=== ESP8266 OTA | versão %s ===\n", FIRMWARE_VERSION);
 
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH); // LED apagado (active low)
+  digitalWrite(LED_BUILTIN, HIGH);
 
   connectWiFi();
-  checkForUpdate(); // verifica logo ao ligar
+  checkForUpdate();
+  lastCheckMs = millis();
 }
 
 void loop() {
-  if (millis() - lastCheckMs >= OTA_CHECK_INTERVAL_MS) {
-    lastCheckMs = millis();
+  const unsigned long now = millis();
+
+  if (now - lastCheckMs >= OTA_CHECK_INTERVAL_MS) {
+    lastCheckMs = now;
     checkForUpdate();
   }
 
-  // LED pisca a cada 5s
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(100);
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(100);
+  if (now - lastLedMs >= LED_BLINK_INTERVAL_MS) {
+    lastLedMs = now;
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  }
+
+  yield();
 }
 
 // ============================================================
-//  Conexão Wi-Fi
+//  Wi-Fi
 // ============================================================
 void connectWiFi() {
   Serial.printf("Conectando ao Wi-Fi: %s", WIFI_SSID);
+
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  int tentativas = 0;
+  uint8_t tentativas = 0;
   while (WiFi.status() != WL_CONNECTED && tentativas < 30) {
     delay(500);
     Serial.print(".");
@@ -80,135 +88,125 @@ void connectWiFi() {
 }
 
 // ============================================================
-//  Verificação de atualização OTA
+//  HTTP GET simples (texto pequeno, ex.: version.txt)
+//  WiFiClientSecure é destruído ao retornar — libera heap p/ OTA
+// ============================================================
+bool fetchText(const char* url, String& out, uint16_t timeoutMs) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setBufferSizes(4096, 512);
+
+  HTTPClient http;
+  http.begin(client, url);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(timeoutMs);
+  http.addHeader("Accept-Encoding", "identity");
+
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[OTA] HTTP %d em %s\n", code, url);
+    http.end();
+    return false;
+  }
+
+  out = http.getString();
+  out.trim();
+  http.end();
+  return true;
+}
+
+// ============================================================
+//  Verificação de atualização
 // ============================================================
 void checkForUpdate() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[OTA] Sem Wi-Fi, pulando verificação.");
+    Serial.println("[OTA] Sem Wi-Fi.");
     return;
   }
 
   Serial.println("[OTA] Verificando nova versão...");
-  Serial.printf("[OTA] Heap livre: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("[OTA] Heap: %d bytes\n", ESP.getFreeHeap());
 
-  // Bloco isolado: o WiFiClientSecure é destruído ao sair,
-  // liberando ~30KB de heap antes de abrir o download
   String latestVersion;
-  {
-    WiFiClientSecure vClient;
-    vClient.setInsecure();
+  if (!fetchText(VERSION_URL, latestVersion, 10000)) return;
 
-    HTTPClient http;
-    http.begin(vClient, VERSION_URL);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setTimeout(10000);
-
-    int code = http.GET();
-
-    if (code != HTTP_CODE_OK) {
-      Serial.printf("[OTA] Erro ao obter version.txt: HTTP %d\n", code);
-      http.end();
-      return;
-    }
-
-    latestVersion = http.getString();
-    latestVersion.trim();
-    http.end();
-  } // vClient destruído aqui — heap liberado
-
-  Serial.printf("[OTA] Versão atual: %s | Versão no repositório: %s\n",
+  Serial.printf("[OTA] Local: %s | Remoto: %s\n",
                 FIRMWARE_VERSION, latestVersion.c_str());
 
   if (latestVersion == FIRMWARE_VERSION) {
-    Serial.println("[OTA] Firmware já está atualizado.");
+    Serial.println("[OTA] Firmware atualizado.");
     return;
   }
 
-  Serial.printf("[OTA] Nova versão encontrada (%s). Atualizando...\n",
-                latestVersion.c_str());
-
-  delay(500); // garante que o heap se estabilize
+  Serial.printf("[OTA] Atualizando para %s...\n", latestVersion.c_str());
   applyUpdate(FIRMWARE_URL);
 }
 
 // ============================================================
-//  Download e gravação do firmware
-//  - Uma única conexão SSL com HTTPC_STRICT_FOLLOW_REDIRECTS
-//  - WDT desabilitado antes do Update.begin() (~4s de apagamento)
-//  - Loop manual para download (WiFiClient::readBytes() não bloqueia)
+//  Limpeza em caso de falha no OTA
 // ============================================================
-void applyUpdate(const String& url) {
+void otaAbort(HTTPClient* http, bool cancelUpdate) {
+  if (cancelUpdate && Update.isRunning()) Update.end(true);
+  if (http) http->end();
+  ESP.wdtEnable(0);
+  digitalWrite(LED_BUILTIN, HIGH);
+}
+
+// ============================================================
+//  Download e gravação do firmware
+// ============================================================
+void applyUpdate(const char* url) {
   digitalWrite(LED_BUILTIN, LOW);
   Serial.printf("[OTA] Heap: %d bytes\n", ESP.getFreeHeap());
 
-  // SSL + redirect + apagamento de flash bloqueiam a CPU por >6s.
-  // Desabilita WDT ANTES de qualquer operação longa (GET ou Update.begin).
   ESP.wdtDisable();
 
-  WiFiClientSecure fClient;
-  fClient.setInsecure();
+  WiFiClientSecure client;
+  client.setInsecure();
 
   HTTPClient http;
-  http.begin(fClient, url);
+  http.begin(client, url);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(30000);
+  http.setTimeout(OTA_HTTP_TIMEOUT_MS);
   http.addHeader("Accept-Encoding", "identity");
 
   Serial.println("[OTA] Conectando ao CDN...");
-  int code = http.GET();
+  const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     Serial.printf("[OTA] Falha HTTP: %d\n", code);
-    http.end();
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
+    otaAbort(&http);
     return;
   }
 
-  int tamanho = http.getSize();
+  const int tamanho = http.getSize();
   Serial.printf("[OTA] Tamanho: %d bytes\n", tamanho);
   if (tamanho <= 0) {
     Serial.println("[OTA] Tamanho inválido.");
-    http.end();
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
+    otaAbort(&http);
     return;
   }
 
-  // Apaga setores sob demanda durante o write — evita ~4s bloqueando
-  // com a conexão HTTPS já aberta (CDN fecha se demorar demais).
   if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
     Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
-    http.end();
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
+    otaAbort(&http);
     return;
   }
 
-  Serial.println("[OTA] Flash pronto. Baixando...");
+  Serial.println("[OTA] Baixando...");
 
   WiFiClient* stream = http.getStreamPtr();
-  const size_t CHUNK = 1024;
-  uint8_t* buf = (uint8_t*)malloc(CHUNK);
-  if (!buf) {
-    Serial.println("[OTA] Sem memória para buffer.");
-    Update.end(true);
-    http.end();
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
-    return;
-  }
-
   size_t gravados = 0;
+  size_t proximoLog = OTA_PROGRESS_BYTES;
   unsigned long ultimoDado = millis();
 
   while (gravados < (size_t)tamanho) {
     yield();
 
-    size_t disponivel = stream->available();
+    const size_t disponivel = stream->available();
     if (disponivel == 0) {
-      if (!stream->connected() && gravados >= (size_t)tamanho) break;
-      if (millis() - ultimoDado > 30000) {
-        Serial.printf("[OTA] Timeout! %d/%d bytes\n", gravados, tamanho);
+      if (!stream->connected()) break;
+      if (millis() - ultimoDado > OTA_DOWNLOAD_TIMEOUT_MS) {
+        Serial.printf("[OTA] Timeout em %d/%d bytes\n", gravados, tamanho);
         break;
       }
       delay(1);
@@ -216,38 +214,33 @@ void applyUpdate(const String& url) {
     }
 
     ultimoDado = millis();
-    size_t lido = stream->read(buf,
-                  min(disponivel, min(CHUNK, (size_t)tamanho - gravados)));
+    const size_t want = min(disponivel, min((size_t)OTA_CHUNK_SIZE,
+                                            (size_t)tamanho - gravados));
+    const size_t lido = stream->read(otaBuffer, want);
     if (lido == 0) continue;
 
-    if (Update.write(buf, lido) != lido) {
-      Serial.println("[OTA] Erro ao gravar no flash");
+    if (Update.write(otaBuffer, lido) != lido) {
+      Serial.println("[OTA] Erro ao gravar.");
       break;
     }
-    gravados += lido;
 
-    if (gravados % 16384 == 0) {
+    gravados += lido;
+    if (gravados >= proximoLog) {
       Serial.printf("[OTA] %d/%d bytes\n", gravados, tamanho);
+      proximoLog += OTA_PROGRESS_BYTES;
     }
   }
 
-  free(buf);
-  Serial.printf("[OTA] Gravados: %d de %d bytes\n", gravados, tamanho);
+  Serial.printf("[OTA] Gravados: %d/%d bytes\n", gravados, tamanho);
 
   if (gravados != (size_t)tamanho) {
-    Serial.println("[OTA] Download incompleto.");
-    Update.end(true);
-    http.end();
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
+    otaAbort(&http, true);
     return;
   }
 
   if (!Update.end(true)) {
     Serial.printf("[OTA] Erro ao finalizar: %s\n", Update.getErrorString().c_str());
-    http.end();
-    ESP.wdtEnable(0);
-    digitalWrite(LED_BUILTIN, HIGH);
+    otaAbort(&http);
     return;
   }
 
