@@ -33,7 +33,7 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp8266:esp8266
           arduino-cli lib install "PubSubClient"
-          arduino-cli lib install "ESP8266Ping"
+          arduino-cli lib install --git-url https://github.com/dancol90/ESP8266Ping.git
 
       # 4) Extrai a versão da tag (remove o "v" inicial)
       - name: Extrair versão
