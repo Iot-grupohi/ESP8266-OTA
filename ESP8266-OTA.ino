@@ -142,9 +142,8 @@ void applyUpdate(const String& url) {
 
   WiFiClientSecure fClient;
   fClient.setInsecure();
-  // RX 4096: suficiente para o certificado SSL do CDN do GitHub
-  // TX 512:  mínimo, só enviamos o GET
-  fClient.setBufferSizes(4096, 512);
+  // Usa o padrão BearSSL: RX=16384, TX=512
+  // Necessário para receber blocos TLS de até 16KB enviados pelo CDN do GitHub
 
   HTTPClient http;
   http.begin(fClient, url);
