@@ -150,6 +150,9 @@ void applyUpdate(const String& url) {
   http.begin(fClient, url);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(30000);
+  http.addHeader("Accept-Encoding", "identity");
+  const char* headers[] = { "Content-Type", "Content-Encoding" };
+  http.collectHeaders(headers, 2);
 
   int code = http.GET();
 
@@ -160,7 +163,10 @@ void applyUpdate(const String& url) {
     return;
   }
 
-  int tamanho = http.getSize(); // -1 se desconhecido
+  Serial.printf("[OTA] Content-Type: %s\n",     http.header("Content-Type").c_str());
+  Serial.printf("[OTA] Content-Encoding: %s\n", http.header("Content-Encoding").c_str());
+
+  int tamanho = http.getSize();
   Serial.printf("[OTA] Tamanho do firmware: %d bytes\n", tamanho);
 
   if (!Update.begin(tamanho > 0 ? tamanho : UPDATE_SIZE_UNKNOWN)) {
@@ -175,6 +181,7 @@ void applyUpdate(const String& url) {
   uint8_t buf[512];
   size_t gravados = 0;
   int semDados = 0;
+  bool primeiroBloco = true;
 
   while (http.connected() && (tamanho == -1 || gravados < (size_t)tamanho)) {
     size_t disponivel = stream->available();
@@ -185,6 +192,13 @@ void applyUpdate(const String& url) {
     }
     semDados = 0;
     size_t lido = stream->readBytes(buf, min(disponivel, sizeof(buf)));
+
+    if (primeiroBloco) {
+      primeiroBloco = false;
+      Serial.printf("[OTA] Primeiros bytes: %02X %02X %02X %02X\n",
+                    buf[0], buf[1], buf[2], buf[3]);
+    }
+
     if (Update.write(buf, lido) != lido) {
       Serial.printf("[OTA] Erro na gravação: %s\n", Update.getErrorString().c_str());
       http.end();
