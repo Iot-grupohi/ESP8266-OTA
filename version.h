@@ -1,4 +1,4 @@
 #pragma once
 
 // Versão do firmware — deve ser igual à tag do release no GitHub (sem "v")
-#define FIRMWARE_VERSION "2.7.0"
+#define FIRMWARE_VERSION "2.8.0"
