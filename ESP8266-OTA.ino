@@ -190,10 +190,9 @@ void applyUpdate(const String& startUrl) {
     int tamanho = http.getSize();
     Serial.printf("[OTA] Tamanho: %d bytes\n", tamanho);
 
-    // Limpa qualquer estado anterior do Update
-    if (Update.isRunning()) Update.end(true);
-
-    if (!Update.begin(tamanho > 0 ? tamanho : UPDATE_SIZE_UNKNOWN)) {
+    // UPDATE_SIZE_UNKNOWN: apaga setores sob demanda durante a gravação
+    // evita ~4s de apagamento prévio que fecha a conexão com o CDN
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
       Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
       http.end();
       digitalWrite(LED_BUILTIN, HIGH);
