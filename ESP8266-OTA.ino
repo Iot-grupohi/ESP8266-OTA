@@ -191,7 +191,7 @@ void applyUpdate(const String& startUrl) {
     Serial.printf("[OTA] Tamanho: %d bytes\n", tamanho);
 
     // Limpa qualquer estado anterior do Update
-    if (Update.isRunning()) Update.abort();
+    if (Update.isRunning()) Update.end(true);
 
     if (!Update.begin(tamanho > 0 ? tamanho : UPDATE_SIZE_UNKNOWN)) {
       Serial.printf("[OTA] Sem espaço: %s\n", Update.getErrorString().c_str());
