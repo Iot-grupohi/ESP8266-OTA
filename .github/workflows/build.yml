@@ -24,7 +24,7 @@ jobs:
       - name: Instalar arduino-cli
         uses: arduino/setup-arduino-cli@v2
 
-      # 3) Adiciona o índice de placas do ESP8266
+      # 3) Adiciona o índice de placas e bibliotecas
       - name: Configurar índice de placas
         run: |
           arduino-cli config init
@@ -32,6 +32,8 @@ jobs:
             https://arduino.esp8266.com/stable/package_esp8266com_index.json
           arduino-cli core update-index
           arduino-cli core install esp8266:esp8266
+          arduino-cli lib install "PubSubClient"
+          arduino-cli lib install "ESP8266Ping"
 
       # 4) Extrai a versão da tag (remove o "v" inicial)
       - name: Extrair versão
@@ -56,12 +58,12 @@ jobs:
           arduino-cli compile \
             --fqbn esp8266:esp8266:nodemcuv2 \
             --output-dir build \
-            ESP8266-OTA.ino
+            mqtt-esp8266.ino
 
       # 7) Renomeia para firmware.bin e cria version.txt
       - name: Preparar assets
         run: |
-          cp build/ESP8266-OTA.ino.bin firmware.bin
+          cp build/mqtt-esp8266.ino.bin firmware.bin
           echo "${{ steps.version.outputs.VERSION }}" > version.txt
 
       # 8) Verifica se o binário é um firmware ESP8266 válido (magic byte 0xE9)
