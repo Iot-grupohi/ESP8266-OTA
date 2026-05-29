@@ -57,16 +57,19 @@ void setLed(bool on) {
 void updateStatusLed() {
   if (ledCommandOverride) return;
 
-  bool wifiOk = (WiFi.status() == WL_CONNECTED);
-  bool mqttOk = client.connected();
+  const bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  const bool mqttOk = client.connected();
 
+  unsigned long interval;
   if (wifiOk && mqttOk) {
-    setLed(true);
-    return;
+    interval = LED_BLINK_CONNECTED_MS;
+  } else if (wifiOk) {
+    interval = LED_BLINK_WIFI_ONLY_MS;
+  } else {
+    interval = LED_BLINK_NO_WIFI_MS;
   }
 
-  unsigned long interval = wifiOk ? 800 : 200;
-  unsigned long now = millis();
+  const unsigned long now = millis();
   if (now - lastBlink >= interval) {
     lastBlink  = now;
     blinkState = !blinkState;
