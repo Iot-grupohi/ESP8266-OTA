@@ -20,6 +20,7 @@ jobs:
       # 2) Instala o arduino-cli (sem action de terceiros — evita aviso Node 20)
       - name: Instalar arduino-cli
         run: |
+          mkdir -p "$HOME/bin"
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR="$HOME/bin" sh
           echo "$HOME/bin" >> "$GITHUB_PATH"
           "$HOME/bin/arduino-cli" version
