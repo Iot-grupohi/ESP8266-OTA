@@ -4,11 +4,15 @@
 #include <ESP8266WiFi.h>
 
 #define CFG_MAGIC     0x4C415633UL  // "LAV3"
-#define CFG_EEPROM_SZ 512
+#define CFG_EEPROM_SZ 64
 #define CFG_MACHINES  4
 
-struct StoreConfig {
+struct StoreEeprom {
   uint32_t magic;
+  char storeName[16];
+};
+
+struct StoreConfig {
   char storeName[16];
   char staticIp[16];
   char gateway[16];
@@ -35,7 +39,6 @@ static void cfgCopy(char* dst, size_t len, const char* src) {
 
 void loadConfigDefaults() {
   memset(&cfg, 0, sizeof(cfg));
-  cfg.magic = CFG_MAGIC;
   cfgCopy(cfg.storeName, sizeof(cfg.storeName), "pb05");
   cfgCopy(cfg.staticIp, sizeof(cfg.staticIp), "192.168.50.180");
   cfgCopy(cfg.gateway, sizeof(cfg.gateway), "192.168.50.1");
@@ -64,24 +67,30 @@ void loadConfigDefaults() {
 }
 
 void saveConfig() {
-  cfg.magic = CFG_MAGIC;
+  StoreEeprom eeprom;
+  eeprom.magic = CFG_MAGIC;
+  cfgCopy(eeprom.storeName, sizeof(eeprom.storeName), cfg.storeName);
+
   EEPROM.begin(CFG_EEPROM_SZ);
-  EEPROM.put(0, cfg);
+  EEPROM.put(0, eeprom);
   EEPROM.commit();
   EEPROM.end();
 }
 
 void loadConfig() {
+  loadConfigDefaults();
+
+  StoreEeprom eeprom;
   EEPROM.begin(CFG_EEPROM_SZ);
-  EEPROM.get(0, cfg);
+  EEPROM.get(0, eeprom);
   EEPROM.end();
 
-  if (cfg.magic != CFG_MAGIC || cfg.storeName[0] == '\0') {
-    Serial.println("[CFG] EEPROM vazia ou inválida — usando padrões");
-    loadConfigDefaults();
-    saveConfig();
+  if (eeprom.magic == CFG_MAGIC && eeprom.storeName[0] != '\0') {
+    cfgCopy(cfg.storeName, sizeof(cfg.storeName), eeprom.storeName);
+    Serial.printf("[CFG] Loja carregada: %s\n", cfg.storeName);
   } else {
-    Serial.println("[CFG] Configuração carregada da EEPROM");
+    Serial.println("[CFG] EEPROM vazia — loja padrao");
+    saveConfig();
   }
 }
 
@@ -93,7 +102,7 @@ void resetConfig() {
 bool connectWiFiStatic() {
   IPAddress ip, gw, sn, dns;
   if (!ip.fromString(cfg.staticIp) || !gw.fromString(cfg.gateway) || !sn.fromString(cfg.subnet)) {
-    Serial.println("[WiFi] IP inválido na config");
+    Serial.println("[WiFi] IP invalido");
     return false;
   }
   dns = gw;

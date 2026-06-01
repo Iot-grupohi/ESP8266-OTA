@@ -89,125 +89,81 @@ int findIndex(char ids[][8], int count, String id) {
   return -1;
 }
 
-// ── Página de configuração ───────────────────────────
-String htmlInput(const char* label, const char* name, const char* value, const char* type = "text") {
-  return "<label>" + String(label) +
-         "<input name='" + name + "' value='" + value + "' type='" + type + "'></label>";
+// ── Página de configuração (somente nome da loja) ────
+static const char PAGE_STYLE[] PROGMEM =
+  "body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;"
+  "background:#f0f4f8;color:#1e293b;margin:0;padding:24px 16px;line-height:1.5;"
+  "-webkit-font-smoothing:antialiased}"
+  ".card{max-width:420px;margin:0 auto;background:#fff;border-radius:12px;"
+  "padding:28px 24px;box-shadow:0 4px 24px rgba(0,0,0,.08)}"
+  "h1{font-size:1.5rem;font-weight:600;margin:0 0 8px;letter-spacing:-.02em}"
+  ".sub{font-size:.875rem;color:#64748b;margin-bottom:24px}"
+  "label{display:block;font-size:.875rem;font-weight:500;margin-bottom:6px;color:#334155}"
+  "input{width:100%;padding:12px 14px;font-size:1rem;font-family:inherit;"
+  "border:1px solid #cbd5e1;border-radius:8px;box-sizing:border-box}"
+  "input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}"
+  "button{width:100%;margin-top:20px;padding:12px;font-size:1rem;font-weight:600;"
+  "font-family:inherit;border:none;border-radius:8px;cursor:pointer;background:#2563eb;color:#fff}"
+  ".link{display:block;text-align:center;margin-top:16px;font-size:.875rem;color:#64748b;"
+  "text-decoration:none}"
+  ".msg{text-align:center;padding:48px 24px;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif}"
+  ".msg h2{font-size:1.25rem;margin-bottom:8px}";
+
+void sendHtmlPage(const String& body) {
+  configServer.sendHeader("Cache-Control", "no-cache");
+  configServer.send(200, "text/html; charset=iso-8859-1", body);
 }
 
 void handleConfigPage() {
-  String html = "<!DOCTYPE html><html><head>"
-                "<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>Config Loja</title>"
-                "<style>"
-                "body{font-family:sans-serif;max-width:720px;margin:20px auto;padding:0 12px;background:#f5f5f5}"
-                "h1,h2{color:#333}fieldset{border:1px solid #ccc;border-radius:8px;margin:16px 0;padding:12px;background:#fff}"
-                "label{display:block;margin:8px 0;font-size:14px}"
-                "input{width:100%;padding:8px;box-sizing:border-box;margin-top:4px}"
-                ".row{display:grid;grid-template-columns:1fr 1fr;gap:8px}"
-                "button,.btn{padding:10px 16px;border:none;border-radius:6px;cursor:pointer;font-size:14px}"
-                ".save{background:#2563eb;color:#fff}.reset{background:#dc2626;color:#fff;margin-left:8px}"
-                ".info{color:#666;font-size:13px}"
-                "</style></head><body>"
-                "<h1>Configuração da Loja</h1>"
-                "<p class='info'>Firmware " FIRMWARE_VERSION " | IP atual: " + WiFi.localIP().toString() + "</p>"
-                "<form method='POST' action='/save'>";
+  String html = F("<!DOCTYPE html><html lang='pt-BR'><head>"
+                "<meta charset='iso-8859-1'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Config Loja</title><style>");
+  html += FPSTR(PAGE_STYLE);
+  html += F("</style></head><body><div class='card'>"
+            "<h1>Configura&ccedil;&atilde;o da Loja</h1>"
+            "<p class='sub'>Firmware ");
+  html += FIRMWARE_VERSION;
+  html += F(" &middot; IP ");
+  html += WiFi.localIP().toString();
+  html += F("</p><form method='POST' action='/save'>"
+            "<label for='store'>Nome da loja (t&oacute;pico MQTT)</label>"
+            "<input id='store' name='store' value='");
+  html += cfg.storeName;
+  html += F("' maxlength='15' required>"
+            "<button type='submit'>Salvar</button>"
+            "</form>"
+            "<a class='link' href='/reset' "
+            "onclick=\"return confirm('Restaurar nome padrao (pb05)?')\">"
+            "Restaurar padr&atilde;o</a>"
+            "</div></body></html>");
 
-  html += "<fieldset><legend>Loja</legend>";
-  html += htmlInput("Nome da loja (tópico MQTT)", "store", cfg.storeName);
-  html += "</fieldset>";
-
-  html += "<fieldset><legend>Rede (IP fixo deste ESP)</legend>";
-  html += htmlInput("IP fixo", "staticIp", cfg.staticIp);
-  html += htmlInput("Gateway", "gateway", cfg.gateway);
-  html += htmlInput("Máscara", "subnet", cfg.subnet);
-  html += "</fieldset>";
-
-  html += "<fieldset><legend>MQTT</legend>";
-  html += htmlInput("Servidor", "mqttServer", cfg.mqttServer);
-  html += htmlInput("Porta", "mqttPort", String(cfg.mqttPort).c_str(), "number");
-  html += htmlInput("Usuário", "mqttUser", cfg.mqttUser);
-  html += htmlInput("Senha", "mqttPass", cfg.mqttPass, "password");
-  html += "</fieldset>";
-
-  html += "<fieldset><legend>Lavadoras</legend>";
-  for (int i = 0; i < CFG_MACHINES; i++) {
-    html += "<div class='row'>";
-    html += htmlInput(("Lavadora " + String(i + 1) + " IP").c_str(), ("wash_ip_" + String(i)).c_str(), cfg.ipWash[i]);
-    html += htmlInput("ID", ("wash_id_" + String(i)).c_str(), cfg.idWash[i]);
-    html += "</div>";
-  }
-  html += "</fieldset>";
-
-  html += "<fieldset><legend>Secadoras</legend>";
-  for (int i = 0; i < CFG_MACHINES; i++) {
-    html += "<div class='row'>";
-    html += htmlInput(("Secadora " + String(i + 1) + " IP").c_str(), ("dry_ip_" + String(i)).c_str(), cfg.ipDry[i]);
-    html += htmlInput("ID", ("dry_id_" + String(i)).c_str(), cfg.idDry[i]);
-    html += "</div>";
-  }
-  html += "</fieldset>";
-
-  html += "<fieldset><legend>Ar condicionado</legend>";
-  html += htmlInput("IP do AC", "ipAc", cfg.ipAc);
-  html += "</fieldset>";
-
-  html += "<fieldset><legend>Dosadores</legend>";
-  for (int i = 0; i < CFG_MACHINES; i++) {
-    html += "<div class='row'>";
-    html += htmlInput(("Dosador " + String(i + 1) + " IP").c_str(), ("dos_ip_" + String(i)).c_str(), cfg.ipDos[i]);
-    html += htmlInput("ID", ("dos_id_" + String(i)).c_str(), cfg.idDos[i]);
-    html += "</div>";
-  }
-  html += "</fieldset>";
-
-  html += "<button class='save' type='submit'>Salvar na EEPROM</button>";
-  html += "</form>";
-  html += "<p style='margin-top:20px'><a class='btn reset' href='/reset' "
-          "onclick=\"return confirm('Restaurar padrões de fábrica?')\">Restaurar padrões</a></p>";
-  html += "</body></html>";
-
-  configServer.send(200, "text/html", html);
+  sendHtmlPage(html);
 }
 
 void handleConfigSave() {
-  auto arg = [](const char* name) -> String {
-    return configServer.hasArg(name) ? configServer.arg(name) : "";
-  };
-
-  cfgCopy(cfg.storeName, sizeof(cfg.storeName), arg("store").c_str());
-  cfgCopy(cfg.staticIp, sizeof(cfg.staticIp), arg("staticIp").c_str());
-  cfgCopy(cfg.gateway, sizeof(cfg.gateway), arg("gateway").c_str());
-  cfgCopy(cfg.subnet, sizeof(cfg.subnet), arg("subnet").c_str());
-  cfgCopy(cfg.mqttServer, sizeof(cfg.mqttServer), arg("mqttServer").c_str());
-  cfgCopy(cfg.mqttUser, sizeof(cfg.mqttUser), arg("mqttUser").c_str());
-  cfgCopy(cfg.mqttPass, sizeof(cfg.mqttPass), arg("mqttPass").c_str());
-  cfg.mqttPort = (uint16_t)arg("mqttPort").toInt();
-  if (cfg.mqttPort == 0) cfg.mqttPort = 1883;
-
-  for (int i = 0; i < CFG_MACHINES; i++) {
-    cfgCopy(cfg.ipWash[i], sizeof(cfg.ipWash[i]), arg(("wash_ip_" + String(i)).c_str()).c_str());
-    cfgCopy(cfg.idWash[i], sizeof(cfg.idWash[i]), arg(("wash_id_" + String(i)).c_str()).c_str());
-    cfgCopy(cfg.ipDry[i], sizeof(cfg.ipDry[i]), arg(("dry_ip_" + String(i)).c_str()).c_str());
-    cfgCopy(cfg.idDry[i], sizeof(cfg.idDry[i]), arg(("dry_id_" + String(i)).c_str()).c_str());
-    cfgCopy(cfg.ipDos[i], sizeof(cfg.ipDos[i]), arg(("dos_ip_" + String(i)).c_str()).c_str());
-    cfgCopy(cfg.idDos[i], sizeof(cfg.idDos[i]), arg(("dos_id_" + String(i)).c_str()).c_str());
+  if (configServer.hasArg("store")) {
+    cfgCopy(cfg.storeName, sizeof(cfg.storeName), configServer.arg("store").c_str());
   }
-  cfgCopy(cfg.ipAc, sizeof(cfg.ipAc), arg("ipAc").c_str());
-
   saveConfig();
-  configServer.send(200, "text/html",
-    "<html><body style='font-family:sans-serif;text-align:center;margin-top:40px'>"
-    "<h2>Configuração salva!</h2><p>Reiniciando...</p></body></html>");
+  sendHtmlPage(
+    F("<html lang='pt-BR'><head><meta charset='iso-8859-1'><style>") +
+    String(FPSTR(PAGE_STYLE)) +
+    F("</style></head><body><div class='msg'>"
+      "<h2>Configura&ccedil;&atilde;o salva!</h2>"
+      "<p>Reiniciando...</p></div></body></html>"));
   delay(1000);
   ESP.restart();
 }
 
 void handleConfigReset() {
   resetConfig();
-  configServer.send(200, "text/html",
-    "<html><body style='font-family:sans-serif;text-align:center;margin-top:40px'>"
-    "<h2>Padrões restaurados!</h2><p>Reiniciando...</p></body></html>");
+  sendHtmlPage(
+    F("<html lang='pt-BR'><head><meta charset='iso-8859-1'><style>") +
+    String(FPSTR(PAGE_STYLE)) +
+    F("</style></head><body><div class='msg'>"
+      "<h2>Padr&atilde;o restaurado!</h2>"
+      "<p>Reiniciando...</p></div></body></html>"));
   delay(1000);
   ESP.restart();
 }
