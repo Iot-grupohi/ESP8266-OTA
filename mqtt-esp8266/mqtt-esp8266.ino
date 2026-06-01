@@ -89,54 +89,119 @@ int findIndex(char ids[][8], int count, String id) {
   return -1;
 }
 
-// ── Página de configuração (somente nome da loja) ────
+// ── Pagina de configuracao ───────────────────────────
 static const char PAGE_STYLE[] PROGMEM =
+  "*{box-sizing:border-box;margin:0;padding:0}"
   "body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;"
-  "background:#f0f4f8;color:#1e293b;margin:0;padding:24px 16px;line-height:1.5;"
-  "-webkit-font-smoothing:antialiased}"
-  ".card{max-width:420px;margin:0 auto;background:#fff;border-radius:12px;"
-  "padding:28px 24px;box-shadow:0 4px 24px rgba(0,0,0,.08)}"
-  "h1{font-size:1.5rem;font-weight:600;margin:0 0 8px;letter-spacing:-.02em}"
-  ".sub{font-size:.875rem;color:#64748b;margin-bottom:24px}"
-  "label{display:block;font-size:.875rem;font-weight:500;margin-bottom:6px;color:#334155}"
-  "input{width:100%;padding:12px 14px;font-size:1rem;font-family:inherit;"
-  "border:1px solid #cbd5e1;border-radius:8px;box-sizing:border-box}"
-  "input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}"
-  "button{width:100%;margin-top:20px;padding:12px;font-size:1rem;font-weight:600;"
-  "font-family:inherit;border:none;border-radius:8px;cursor:pointer;background:#2563eb;color:#fff}"
-  ".link{display:block;text-align:center;margin-top:16px;font-size:.875rem;color:#64748b;"
-  "text-decoration:none}"
-  ".msg{text-align:center;padding:48px 24px;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif}"
-  ".msg h2{font-size:1.25rem;margin-bottom:8px}";
+  "background:linear-gradient(160deg,#0f172a 0%,#1e293b 50%,#334155 100%);"
+  "min-height:100vh;color:#e2e8f0;padding:24px 16px 40px;-webkit-font-smoothing:antialiased}"
+  ".wrap{max-width:480px;margin:0 auto}"
+  ".brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}"
+  ".logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#3b82f6,#2563eb);"
+  "display:flex;align-items:center;justify-content:center;font-size:1.25rem;font-weight:700;color:#fff;"
+  "box-shadow:0 4px 14px rgba(37,99,235,.4)}"
+  ".brand h1{font-size:1.125rem;font-weight:600;color:#f8fafc;letter-spacing:-.01em}"
+  ".brand p{font-size:.75rem;color:#94a3b8;margin-top:2px}"
+  ".store-card{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);"
+  "border-radius:16px;padding:24px;margin-bottom:20px;backdrop-filter:blur(8px)}"
+  ".store-label{font-size:.6875rem;font-weight:600;text-transform:uppercase;"
+  "letter-spacing:.08em;color:#94a3b8;margin-bottom:8px}"
+  ".store-name{font-size:2.25rem;font-weight:700;color:#fff;letter-spacing:.04em;"
+  "font-variant-numeric:tabular-nums;line-height:1.1}"
+  ".store-topic{font-size:.8125rem;color:#64748b;margin-top:10px;font-family:ui-monospace,monospace;"
+  "background:rgba(0,0,0,.25);padding:8px 12px;border-radius:8px;display:inline-block}"
+  ".status-row{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}"
+  ".pill{display:inline-flex;align-items:center;gap:6px;font-size:.75rem;font-weight:500;"
+  "padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.08);color:#cbd5e1}"
+  ".dot{width:7px;height:7px;border-radius:50%;background:#64748b}"
+  ".dot.on{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.6)}"
+  ".panel{background:#fff;border-radius:16px;padding:24px;color:#1e293b;"
+  "box-shadow:0 20px 50px rgba(0,0,0,.25)}"
+  ".panel h2{font-size:1rem;font-weight:600;margin-bottom:4px;color:#0f172a}"
+  ".panel .hint{font-size:.8125rem;color:#64748b;margin-bottom:20px}"
+  "label{display:block;font-size:.8125rem;font-weight:600;margin-bottom:8px;color:#475569}"
+  "input{width:100%;padding:14px 16px;font-size:1.0625rem;font-family:ui-monospace,monospace;"
+  "border:2px solid #e2e8f0;border-radius:10px;background:#f8fafc;color:#0f172a;"
+  "text-transform:lowercase;letter-spacing:.03em}"
+  "input:focus{outline:none;border-color:#2563eb;background:#fff;"
+  "box-shadow:0 0 0 4px rgba(37,99,235,.12)}"
+  "button{width:100%;margin-top:20px;padding:14px;font-size:.9375rem;font-weight:600;"
+  "font-family:inherit;border:none;border-radius:10px;cursor:pointer;"
+  "background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;"
+  "box-shadow:0 4px 14px rgba(37,99,235,.35);transition:transform .15s}"
+  "button:active{transform:scale(.98)}"
+  ".foot{margin-top:20px;text-align:center;font-size:.75rem;color:#64748b}"
+  ".foot span{color:#94a3b8}"
+  ".link-reset{display:block;text-align:center;margin-top:14px;font-size:.8125rem;"
+  "color:#94a3b8;text-decoration:none}"
+  ".link-reset:hover{color:#cbd5e1}"
+  ".msg-page{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}"
+  ".msg-box{text-align:center;background:#fff;border-radius:16px;padding:40px 32px;"
+  "max-width:360px;box-shadow:0 20px 50px rgba(0,0,0,.3)}"
+  ".msg-box h2{font-size:1.25rem;color:#0f172a;margin-bottom:8px}"
+  ".msg-box p{color:#64748b;font-size:.9375rem}"
+  ".spinner{width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#2563eb;"
+  "border-radius:50%;margin:16px auto 0;animation:spin .8s linear infinite}"
+  "@keyframes spin{to{transform:rotate(360deg)}}";
 
 void sendHtmlPage(const String& body) {
   configServer.sendHeader("Cache-Control", "no-cache");
   configServer.send(200, "text/html; charset=iso-8859-1", body);
 }
 
+String htmlHead() {
+  String h = F("<!DOCTYPE html><html lang='pt-BR'><head>"
+               "<meta charset='iso-8859-1'>"
+               "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+               "<title>Gateway MQTT</title><style>");
+  h += FPSTR(PAGE_STYLE);
+  h += F("</style></head>");
+  return h;
+}
+
 void handleConfigPage() {
-  String html = F("<!DOCTYPE html><html lang='pt-BR'><head>"
-                "<meta charset='iso-8859-1'>"
-                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>Config Loja</title><style>");
-  html += FPSTR(PAGE_STYLE);
-  html += F("</style></head><body><div class='card'>"
-            "<h1>Configura&ccedil;&atilde;o da Loja</h1>"
-            "<p class='sub'>Firmware ");
-  html += FIRMWARE_VERSION;
-  html += F(" &middot; IP ");
-  html += WiFi.localIP().toString();
-  html += F("</p><form method='POST' action='/save'>"
-            "<label for='store'>Nome da loja (t&oacute;pico MQTT)</label>"
+  const bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  const bool mqttOk = client.connected();
+
+  String html = htmlHead();
+  html += F("<body><div class='wrap'>"
+            "<div class='brand'><div class='logo'>G</div>"
+            "<div><h1>Gateway MQTT</h1>"
+            "<p>LAV60 &middot; Painel de configura&ccedil;&atilde;o</p></div></div>");
+
+  html += F("<div class='store-card'>"
+            "<div class='store-label'>Loja configurada</div>"
+            "<div class='store-name'>");
+  html += cfg.storeName;
+  html += F("</div><div class='store-topic'>");
+  html += cfg.storeName;
+  html += F("/#</div><div class='status-row'>"
+            "<span class='pill'><span class='dot ");
+  html += wifiOk ? F("on") : F("");
+  html += F("'></span> Wi-Fi</span>"
+            "<span class='pill'><span class='dot ");
+  html += mqttOk ? F("on") : F("");
+  html += F("'></span> MQTT</span></div></div>");
+
+  html += F("<div class='panel'><h2>Alterar loja</h2>"
+            "<p class='hint'>Identificador usado nos t&oacute;picos MQTT desta unidade.</p>"
+            "<form method='POST' action='/save'>"
+            "<label for='store'>C&oacute;digo da loja</label>"
             "<input id='store' name='store' value='");
   html += cfg.storeName;
-  html += F("' maxlength='15' required>"
-            "<button type='submit'>Salvar</button>"
+  html += F("' maxlength='15' pattern='[a-zA-Z0-9_-]+' "
+            "placeholder='ex: pb05' required autocapitalize='off' spellcheck='false'>"
+            "<button type='submit'>Salvar configura&ccedil;&atilde;o</button>"
             "</form>"
-            "<a class='link' href='/reset' "
-            "onclick=\"return confirm('Restaurar nome padrao (pb05)?')\">"
-            "Restaurar padr&atilde;o</a>"
-            "</div></body></html>");
+            "<a class='link-reset' href='/reset' "
+            "onclick=\"return confirm('Restaurar loja padrao pb05?')\">"
+            "Restaurar padr&atilde;o</a></div>");
+
+  html += F("<div class='foot'><span>IP </span>");
+  html += WiFi.localIP().toString();
+  html += F(" &middot; <span>FW </span>");
+  html += FIRMWARE_VERSION;
+  html += F("</div></div></body></html>");
 
   sendHtmlPage(html);
 }
@@ -146,25 +211,31 @@ void handleConfigSave() {
     cfgCopy(cfg.storeName, sizeof(cfg.storeName), configServer.arg("store").c_str());
   }
   saveConfig();
-  sendHtmlPage(
-    F("<html lang='pt-BR'><head><meta charset='iso-8859-1'><style>") +
-    String(FPSTR(PAGE_STYLE)) +
-    F("</style></head><body><div class='msg'>"
-      "<h2>Configura&ccedil;&atilde;o salva!</h2>"
-      "<p>Reiniciando...</p></div></body></html>"));
-  delay(1000);
+  String html = htmlHead();
+  html += F("<body><div class='msg-page'><div class='msg-box'>"
+            "<h2>Configura&ccedil;&atilde;o salva!</h2>"
+            "<p>Loja <strong>");
+  html += cfg.storeName;
+  html += F("</strong> gravada na EEPROM.</p>"
+            "<div class='spinner'></div>"
+            "<p style='margin-top:12px;font-size:.8125rem'>Reiniciando...</p>"
+            "</div></div></body></html>");
+  sendHtmlPage(html);
+  delay(1500);
   ESP.restart();
 }
 
 void handleConfigReset() {
   resetConfig();
-  sendHtmlPage(
-    F("<html lang='pt-BR'><head><meta charset='iso-8859-1'><style>") +
-    String(FPSTR(PAGE_STYLE)) +
-    F("</style></head><body><div class='msg'>"
-      "<h2>Padr&atilde;o restaurado!</h2>"
-      "<p>Reiniciando...</p></div></body></html>"));
-  delay(1000);
+  String html = htmlHead();
+  html += F("<body><div class='msg-page'><div class='msg-box'>"
+            "<h2>Padr&atilde;o restaurado</h2>"
+            "<p>Loja resetada para <strong>pb05</strong>.</p>"
+            "<div class='spinner'></div>"
+            "<p style='margin-top:12px;font-size:.8125rem'>Reiniciando...</p>"
+            "</div></div></body></html>");
+  sendHtmlPage(html);
+  delay(1500);
   ESP.restart();
 }
 
