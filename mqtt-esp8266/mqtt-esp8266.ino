@@ -1,4 +1,5 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include <PubSubClient.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -11,37 +12,20 @@
 
 #include "config.h"
 #include "version.h"
+#include "store_config.h"
 
 #define GH_BASE      "https://github.com/" GITHUB_USER "/" GITHUB_REPO "/releases/latest/download"
 #define VERSION_URL  GH_BASE "/version.txt"
 #define FIRMWARE_URL GH_BASE "/firmware.bin"
 
-// ── Configurações MQTT ──────────────────────────────
-const char* mqttServer = "161.97.172.86";
-const int   mqttPort   = 1883;
-const char* mqttUser   = "lav60";
-const char* mqttPass   = "lav60";
-const char* storeName  = "pb05";
-
-// ── IPs dos dispositivos locais ─────────────────────
-const char* IP_WASH[] = { "192.168.50.100", "192.168.50.101", "192.168.50.102", "192.168.50.103" };
-const char* ID_WASH[] = { "321", "432", "543", "654" };
-
-const char* IP_DRY[]  = { "192.168.50.104", "192.168.50.105", "192.168.50.106", "192.168.50.107" };
-const char* ID_DRY[]  = { "765", "876", "987", "210" };
-
-const char* IP_AC     = "192.168.50.110";
-const char* IP_DOS[]  = { "192.168.50.150", "192.168.50.151", "192.168.50.152", "192.168.50.153" };
-const char* ID_DOS[]  = { "321", "432", "543", "654" };
-
-// ── Hardware ─────────────────────────────────────────
 const int LED_PIN = 2;
 #define LED_ON  LOW
 #define LED_OFF HIGH
 
-WiFiClient   espClient;
-PubSubClient client(espClient);
-String BASE;
+WiFiClient       espClient;
+PubSubClient     client(espClient);
+ESP8266WebServer configServer(80);
+String           BASE;
 
 static uint8_t otaBuffer[OTA_CHUNK_SIZE];
 static unsigned long lastOtaCheckMs = 0;
@@ -98,11 +82,142 @@ void publishDeviceStatus(String topic, const char* id, bool online) {
   client.publish(topic.c_str(), payload.c_str());
 }
 
-int findIndex(const char** ids, int count, String id) {
+int findIndex(char ids[][8], int count, String id) {
   for (int i = 0; i < count; i++) {
     if (id == ids[i]) return i;
   }
   return -1;
+}
+
+// ── Página de configuração ───────────────────────────
+String htmlInput(const char* label, const char* name, const char* value, const char* type = "text") {
+  return "<label>" + String(label) +
+         "<input name='" + name + "' value='" + value + "' type='" + type + "'></label>";
+}
+
+void handleConfigPage() {
+  String html = "<!DOCTYPE html><html><head>"
+                "<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Config Loja</title>"
+                "<style>"
+                "body{font-family:sans-serif;max-width:720px;margin:20px auto;padding:0 12px;background:#f5f5f5}"
+                "h1,h2{color:#333}fieldset{border:1px solid #ccc;border-radius:8px;margin:16px 0;padding:12px;background:#fff}"
+                "label{display:block;margin:8px 0;font-size:14px}"
+                "input{width:100%;padding:8px;box-sizing:border-box;margin-top:4px}"
+                ".row{display:grid;grid-template-columns:1fr 1fr;gap:8px}"
+                "button,.btn{padding:10px 16px;border:none;border-radius:6px;cursor:pointer;font-size:14px}"
+                ".save{background:#2563eb;color:#fff}.reset{background:#dc2626;color:#fff;margin-left:8px}"
+                ".info{color:#666;font-size:13px}"
+                "</style></head><body>"
+                "<h1>Configuração da Loja</h1>"
+                "<p class='info'>Firmware " FIRMWARE_VERSION " | IP atual: " + WiFi.localIP().toString() + "</p>"
+                "<form method='POST' action='/save'>";
+
+  html += "<fieldset><legend>Loja</legend>";
+  html += htmlInput("Nome da loja (tópico MQTT)", "store", cfg.storeName);
+  html += "</fieldset>";
+
+  html += "<fieldset><legend>Rede (IP fixo deste ESP)</legend>";
+  html += htmlInput("IP fixo", "staticIp", cfg.staticIp);
+  html += htmlInput("Gateway", "gateway", cfg.gateway);
+  html += htmlInput("Máscara", "subnet", cfg.subnet);
+  html += "</fieldset>";
+
+  html += "<fieldset><legend>MQTT</legend>";
+  html += htmlInput("Servidor", "mqttServer", cfg.mqttServer);
+  html += htmlInput("Porta", "mqttPort", String(cfg.mqttPort).c_str(), "number");
+  html += htmlInput("Usuário", "mqttUser", cfg.mqttUser);
+  html += htmlInput("Senha", "mqttPass", cfg.mqttPass, "password");
+  html += "</fieldset>";
+
+  html += "<fieldset><legend>Lavadoras</legend>";
+  for (int i = 0; i < CFG_MACHINES; i++) {
+    html += "<div class='row'>";
+    html += htmlInput(("Lavadora " + String(i + 1) + " IP").c_str(), ("wash_ip_" + String(i)).c_str(), cfg.ipWash[i]);
+    html += htmlInput("ID", ("wash_id_" + String(i)).c_str(), cfg.idWash[i]);
+    html += "</div>";
+  }
+  html += "</fieldset>";
+
+  html += "<fieldset><legend>Secadoras</legend>";
+  for (int i = 0; i < CFG_MACHINES; i++) {
+    html += "<div class='row'>";
+    html += htmlInput(("Secadora " + String(i + 1) + " IP").c_str(), ("dry_ip_" + String(i)).c_str(), cfg.ipDry[i]);
+    html += htmlInput("ID", ("dry_id_" + String(i)).c_str(), cfg.idDry[i]);
+    html += "</div>";
+  }
+  html += "</fieldset>";
+
+  html += "<fieldset><legend>Ar condicionado</legend>";
+  html += htmlInput("IP do AC", "ipAc", cfg.ipAc);
+  html += "</fieldset>";
+
+  html += "<fieldset><legend>Dosadores</legend>";
+  for (int i = 0; i < CFG_MACHINES; i++) {
+    html += "<div class='row'>";
+    html += htmlInput(("Dosador " + String(i + 1) + " IP").c_str(), ("dos_ip_" + String(i)).c_str(), cfg.ipDos[i]);
+    html += htmlInput("ID", ("dos_id_" + String(i)).c_str(), cfg.idDos[i]);
+    html += "</div>";
+  }
+  html += "</fieldset>";
+
+  html += "<button class='save' type='submit'>Salvar na EEPROM</button>";
+  html += "</form>";
+  html += "<p style='margin-top:20px'><a class='btn reset' href='/reset' "
+          "onclick=\"return confirm('Restaurar padrões de fábrica?')\">Restaurar padrões</a></p>";
+  html += "</body></html>";
+
+  configServer.send(200, "text/html", html);
+}
+
+void handleConfigSave() {
+  auto arg = [](const char* name) -> String {
+    return configServer.hasArg(name) ? configServer.arg(name) : "";
+  };
+
+  cfgCopy(cfg.storeName, sizeof(cfg.storeName), arg("store").c_str());
+  cfgCopy(cfg.staticIp, sizeof(cfg.staticIp), arg("staticIp").c_str());
+  cfgCopy(cfg.gateway, sizeof(cfg.gateway), arg("gateway").c_str());
+  cfgCopy(cfg.subnet, sizeof(cfg.subnet), arg("subnet").c_str());
+  cfgCopy(cfg.mqttServer, sizeof(cfg.mqttServer), arg("mqttServer").c_str());
+  cfgCopy(cfg.mqttUser, sizeof(cfg.mqttUser), arg("mqttUser").c_str());
+  cfgCopy(cfg.mqttPass, sizeof(cfg.mqttPass), arg("mqttPass").c_str());
+  cfg.mqttPort = (uint16_t)arg("mqttPort").toInt();
+  if (cfg.mqttPort == 0) cfg.mqttPort = 1883;
+
+  for (int i = 0; i < CFG_MACHINES; i++) {
+    cfgCopy(cfg.ipWash[i], sizeof(cfg.ipWash[i]), arg(("wash_ip_" + String(i)).c_str()).c_str());
+    cfgCopy(cfg.idWash[i], sizeof(cfg.idWash[i]), arg(("wash_id_" + String(i)).c_str()).c_str());
+    cfgCopy(cfg.ipDry[i], sizeof(cfg.ipDry[i]), arg(("dry_ip_" + String(i)).c_str()).c_str());
+    cfgCopy(cfg.idDry[i], sizeof(cfg.idDry[i]), arg(("dry_id_" + String(i)).c_str()).c_str());
+    cfgCopy(cfg.ipDos[i], sizeof(cfg.ipDos[i]), arg(("dos_ip_" + String(i)).c_str()).c_str());
+    cfgCopy(cfg.idDos[i], sizeof(cfg.idDos[i]), arg(("dos_id_" + String(i)).c_str()).c_str());
+  }
+  cfgCopy(cfg.ipAc, sizeof(cfg.ipAc), arg("ipAc").c_str());
+
+  saveConfig();
+  configServer.send(200, "text/html",
+    "<html><body style='font-family:sans-serif;text-align:center;margin-top:40px'>"
+    "<h2>Configuração salva!</h2><p>Reiniciando...</p></body></html>");
+  delay(1000);
+  ESP.restart();
+}
+
+void handleConfigReset() {
+  resetConfig();
+  configServer.send(200, "text/html",
+    "<html><body style='font-family:sans-serif;text-align:center;margin-top:40px'>"
+    "<h2>Padrões restaurados!</h2><p>Reiniciando...</p></body></html>");
+  delay(1000);
+  ESP.restart();
+}
+
+void startConfigServer() {
+  configServer.on("/", HTTP_GET, handleConfigPage);
+  configServer.on("/save", HTTP_POST, handleConfigSave);
+  configServer.on("/reset", HTTP_GET, handleConfigReset);
+  configServer.begin();
+  Serial.println("[CFG] Página: http://" + WiFi.localIP().toString() + "/");
 }
 
 // ── OTA ──────────────────────────────────────────────
@@ -242,8 +357,6 @@ void checkForUpdate() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   Serial.println("[OTA] Verificando versão...");
-  Serial.printf("[OTA] Heap: %d bytes\n", ESP.getFreeHeap());
-
   String latestVersion;
   if (!fetchText(VERSION_URL, latestVersion, 10000)) return;
 
@@ -283,9 +396,9 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
 
   if (path.startsWith("washer/")) {
     String maq = path.substring(7);
-    int idx = findIndex(ID_WASH, 4, maq);
+    int idx = findIndex(cfg.idWash, CFG_MACHINES, maq);
     if (idx >= 0) {
-      ok = httpGet("http://" + String(IP_WASH[idx]) + "/lb");
+      ok = httpGet("http://" + String(cfg.ipWash[idx]) + "/lb");
       Serial.printf("[HTTP] washer %s → %s\n", maq.c_str(), ok ? "OK" : "FAIL");
     }
     client.publish((BASE + "/washer/" + maq + "/status").c_str(), ok ? "ok" : "error");
@@ -294,7 +407,7 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
 
   if (path.startsWith("dryer/")) {
     String maq = path.substring(6);
-    int idx = findIndex(ID_DRY, 4, maq);
+    int idx = findIndex(cfg.idDry, CFG_MACHINES, maq);
     int times = msg.toInt() / 15;
     if (idx < 0 || times < 1 || times > 3) {
       client.publish((BASE + "/dryer/" + maq + "/status").c_str(), "error");
@@ -303,9 +416,8 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
     client.publish((BASE + "/dryer/" + maq + "/status").c_str(), "ok");
     client.loop();
     for (int i = 0; i < times; i++) {
-      ok = httpGet("http://" + String(IP_DRY[idx]) + "/lb");
-      Serial.printf("[HTTP] dryer %s %s min call %d/%d → %s\n",
-                    maq.c_str(), msg.c_str(), i + 1, times, ok ? "OK" : "FAIL");
+      ok = httpGet("http://" + String(cfg.ipDry[idx]) + "/lb");
+      Serial.printf("[HTTP] dryer %s → %s\n", maq.c_str(), ok ? "OK" : "FAIL");
       if (i < times - 1) delay(2000);
     }
     return;
@@ -317,7 +429,7 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
     if (msg == "22")  route = "airon2";
     if (msg == "off") route = "airon3";
     if (route.length() > 0) {
-      ok = httpGet("http://" + String(IP_AC) + "/" + route);
+      ok = httpGet("http://" + String(cfg.ipAc) + "/" + route);
       Serial.printf("[HTTP] ac %s → %s\n", msg.c_str(), ok ? "OK" : "FAIL");
     }
     client.publish((BASE + "/ac/status").c_str(), ok ? "ok" : "error");
@@ -326,10 +438,10 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
 
   if (path.startsWith("doser/")) {
     String maq = path.substring(6);
-    int idx = findIndex(ID_DOS, 4, maq);
+    int idx = findIndex(cfg.idDos, CFG_MACHINES, maq);
     if (idx >= 0) {
-      ok = httpGet("http://" + String(IP_DOS[idx]) + "/" + msg);
-      Serial.printf("[HTTP] doser %s/%s → %s\n", maq.c_str(), msg.c_str(), ok ? "OK" : "FAIL");
+      ok = httpGet("http://" + String(cfg.ipDos[idx]) + "/" + msg);
+      Serial.printf("[HTTP] doser %s → %s\n", maq.c_str(), ok ? "OK" : "FAIL");
     }
     client.publish((BASE + "/doser/" + maq + "/status").c_str(), ok ? "ok" : "error");
     return;
@@ -342,33 +454,22 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
       String json = "{";
 
       json += "\"washers\":{";
-      for (int i = 0; i < 4; i++) {
-        bool on = icmpPing(IP_WASH[i]);
-        json += "\"" + String(ID_WASH[i]) + "\":" + (on ? "true" : "false");
-        if (i < 3) json += ",";
-        Serial.printf("[PING] washer %s → %s\n", ID_WASH[i], on ? "online" : "offline");
+      for (int i = 0; i < CFG_MACHINES; i++) {
+        bool on = icmpPing(cfg.ipWash[i]);
+        json += "\"" + String(cfg.idWash[i]) + "\":" + (on ? "true" : "false");
+        if (i < CFG_MACHINES - 1) json += ",";
       }
-      json += "},";
-
-      json += "\"dryers\":{";
-      for (int i = 0; i < 4; i++) {
-        bool on = icmpPing(IP_DRY[i]);
-        json += "\"" + String(ID_DRY[i]) + "\":" + (on ? "true" : "false");
-        if (i < 3) json += ",";
-        Serial.printf("[PING] dryer %s → %s\n", ID_DRY[i], on ? "online" : "offline");
+      json += "},\"dryers\":{";
+      for (int i = 0; i < CFG_MACHINES; i++) {
+        bool on = icmpPing(cfg.ipDry[i]);
+        json += "\"" + String(cfg.idDry[i]) + "\":" + (on ? "true" : "false");
+        if (i < CFG_MACHINES - 1) json += ",";
       }
-      json += ",";
-
-      bool acOn = icmpPing(IP_AC);
-      json += "\"ac\":" + String(acOn ? "true" : "false") + ",";
-      Serial.printf("[PING] ac → %s\n", acOn ? "online" : "offline");
-
-      json += "\"dosers\":{";
-      for (int i = 0; i < 4; i++) {
-        bool on = icmpPing(IP_DOS[i]);
-        json += "\"" + String(ID_DOS[i]) + "\":" + (on ? "true" : "false");
-        if (i < 3) json += ",";
-        Serial.printf("[PING] doser %s → %s\n", ID_DOS[i], on ? "online" : "offline");
+      json += "},\"ac\":" + String(icmpPing(cfg.ipAc) ? "true" : "false") + ",\"dosers\":{";
+      for (int i = 0; i < CFG_MACHINES; i++) {
+        bool on = icmpPing(cfg.ipDos[i]);
+        json += "\"" + String(cfg.idDos[i]) + "\":" + (on ? "true" : "false");
+        if (i < CFG_MACHINES - 1) json += ",";
       }
       json += "}}";
 
@@ -378,35 +479,30 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
 
     if (sub.startsWith("washer/")) {
       String maq = sub.substring(7);
-      int idx = findIndex(ID_WASH, 4, maq);
-      bool on = (idx >= 0) ? icmpPing(IP_WASH[idx]) : false;
+      int idx = findIndex(cfg.idWash, CFG_MACHINES, maq);
+      bool on = (idx >= 0) ? icmpPing(cfg.ipWash[idx]) : false;
       publishDeviceStatus(BASE + "/ping/washer/" + maq + "/status", maq.c_str(), on);
-      Serial.printf("[PING] washer %s → %s\n", maq.c_str(), on ? "online" : "offline");
       return;
     }
 
     if (sub.startsWith("dryer/")) {
       String maq = sub.substring(6);
-      int idx = findIndex(ID_DRY, 4, maq);
-      bool on = (idx >= 0) ? icmpPing(IP_DRY[idx]) : false;
+      int idx = findIndex(cfg.idDry, CFG_MACHINES, maq);
+      bool on = (idx >= 0) ? icmpPing(cfg.ipDry[idx]) : false;
       publishDeviceStatus(BASE + "/ping/dryer/" + maq + "/status", maq.c_str(), on);
-      Serial.printf("[PING] dryer %s → %s\n", maq.c_str(), on ? "online" : "offline");
       return;
     }
 
     if (sub == "ac") {
-      bool on = icmpPing(IP_AC);
-      publishDeviceStatus(BASE + "/ping/ac/status", "ac", on);
-      Serial.printf("[PING] ac → %s\n", on ? "online" : "offline");
+      publishDeviceStatus(BASE + "/ping/ac/status", "ac", icmpPing(cfg.ipAc));
       return;
     }
 
     if (sub.startsWith("doser/")) {
       String maq = sub.substring(6);
-      int idx = findIndex(ID_DOS, 4, maq);
-      bool on = (idx >= 0) ? icmpPing(IP_DOS[idx]) : false;
+      int idx = findIndex(cfg.idDos, CFG_MACHINES, maq);
+      bool on = (idx >= 0) ? icmpPing(cfg.ipDos[idx]) : false;
       publishDeviceStatus(BASE + "/ping/doser/" + maq + "/status", maq.c_str(), on);
-      Serial.printf("[PING] doser %s → %s\n", maq.c_str(), on ? "online" : "offline");
       return;
     }
   }
@@ -417,7 +513,7 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Conectando ao broker MQTT...");
-    if (client.connect("ESP8266Client", mqttUser, mqttPass)) {
+    if (client.connect("ESP8266Client", cfg.mqttUser, cfg.mqttPass)) {
       Serial.println(" conectado!");
       String wildcard = BASE + "/#";
       client.subscribe(wildcard.c_str());
@@ -426,6 +522,7 @@ void reconnect() {
       Serial.printf(" falhou (rc=%d), tentando em 5s...\n", client.state());
       for (int i = 0; i < 50; i++) {
         updateStatusLed();
+        configServer.handleClient();
         delay(100);
       }
     }
@@ -437,31 +534,29 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   setLed(false);
 
-  BASE = String(storeName);
-
   Serial.printf("\n=== MQTT Gateway | versão %s ===\n", FIRMWARE_VERSION);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  loadConfig();
+  BASE = String(cfg.storeName);
 
-  Serial.print("Conectando ao WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    updateStatusLed();
-    delay(100);
-    Serial.print(".");
+  if (!connectWiFiStatic()) {
+    Serial.println("Reiniciando em 5s...");
+    delay(5000);
+    ESP.restart();
   }
-  Serial.println("\nWiFi conectado! IP: " + WiFi.localIP().toString());
+
+  startConfigServer();
 
   checkForUpdate();
   lastOtaCheckMs = millis();
 
-  client.setServer(mqttServer, mqttPort);
+  client.setServer(cfg.mqttServer, cfg.mqttPort);
   client.setCallback(callback);
 }
 
 void loop() {
+  configServer.handleClient();
+
   if (!client.connected()) reconnect();
   client.loop();
   updateStatusLed();
