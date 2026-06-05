@@ -128,11 +128,59 @@ X-Token: seu_token
 
 ### Dosadores
 
+#### Comando direto (endpoint HTTP no payload)
+
 | Método | Endpoint | Body | Descrição |
 |--------|----------|------|-----------|
-| `POST` | `/{store}/doser/{machine}` | `{ "type": "softener0" }` | Aciona dosador |
+| `POST` | `/{store}/doser/{machine}` | `{ "type": "softener1" }` | Aciona endpoint HTTP direto |
 
-**Tipos:** `softener0`, `softener1`, `softener2`, `am01-1`, `am01-2`, `am02-1`, `am02-2`, `eepromread`
+**Tipos:** `softener0`, `softener1`, `softener2`, `softener3`, `am01-1`, `am01-2`, `am02-1`, `am02-2`, `rele1on`, `rele2on`, `rele3on`, `consultasb01`, `consultaam01`, `consultaam02`, `eepromread`, `status`
+
+#### Ações específicas (firmware v1.5.0+)
+
+| Método | Endpoint | Body | Descrição |
+|--------|----------|------|-----------|
+| `POST` | `/{store}/doser/{machine}/amaciante` | — ou `{ "number": 2 }` ou `{ "endpoint": "softener2" }` | Aciona amaciante |
+| `POST` | `/{store}/doser/{machine}/dosagem` | — ou `{ "endpoint": "am01-1" }` | Executa dosagem |
+| `POST` | `/{store}/doser/{machine}/bomba` | `{ "pump": 2 }` | Liga bomba/relé (1–3) |
+| `GET` | `/{store}/doser/{machine}/consulta` | — | Consulta tempos sabão/floral/sport |
+| `POST` | `/{store}/doser/{machine}/settime` | `{ "rele": 1, "seconds": 2.5 }` | Ajusta tempo de dosagem (segundos) |
+| `POST` | `/{store}/doser/{machine}/settime/sabao` | `{ "seconds": 2.5 }` | Ajusta tempo do sabão (relé 1) |
+| `POST` | `/{store}/doser/{machine}/settime/floral` | `{ "seconds": 2.5 }` | Ajusta tempo floral (relé 2) |
+| `POST` | `/{store}/doser/{machine}/settime/sport` | `{ "seconds": 2.5 }` | Ajusta tempo sport (relé 3) |
+| `GET` | `/{store}/doser/{machine}/device-status` | — | Conectividade HTTP da dosadora |
+
+**Exemplo — consulta de tempos:**
+
+```http
+GET https://gateway.lav60.com/pb05/doser/432/consulta
+X-Token: seu_token
+```
+
+**Resposta (tempos em segundos):**
+
+```json
+{
+  "store": "pb05",
+  "machine": "432",
+  "tempos": {
+    "sabao": 11,
+    "floral": 13,
+    "sport": 12
+  }
+}
+```
+
+> O dispositivo retorna milissegundos; a API converte para segundos. Valores decimais são suportados (ex.: `2.5` = 2,5 segundos).
+
+**Exemplo — acionar bomba 2:**
+
+```bash
+curl -X POST -H "X-Token: seu_token" \
+  -H "Content-Type: application/json" \
+  -d '{"pump": 2}' \
+  https://gateway.lav60.com/pb05/doser/432/bomba
+```
 
 ---
 
@@ -160,4 +208,13 @@ curl -X POST -H "X-Token: seu_token" \
   -H "Content-Type: application/json" \
   -d '{"minutes": 30}' \
   https://gateway.lav60.com/pb05/dryer/765
+
+# Consultar tempos da dosadora 432
+curl -H "X-Token: seu_token" https://gateway.lav60.com/pb05/doser/432/consulta
+
+# Ajustar tempo do sabão para 5 segundos
+curl -X POST -H "X-Token: seu_token" \
+  -H "Content-Type: application/json" \
+  -d '{"seconds": 5}' \
+  https://gateway.lav60.com/pb05/doser/432/settime/sabao
 ```

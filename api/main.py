@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
-from pydantic import BaseModel
-from typing import Literal, Optional
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, Union
 import paho.mqtt.client as mqtt
 import threading
 import json
@@ -13,16 +13,19 @@ load_dotenv()
 app = FastAPI(
     title="MQTT Gateway API — LAV60",
     description="API to control washers, dryers, AC and dosers via MQTT",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 # ── MQTT Settings ───────────────────────────────────
-MQTT_BROKER     = os.getenv("MQTT_BROKER", "localhost")
-MQTT_PORT       = int(os.getenv("MQTT_PORT", 1883))
-MQTT_USER       = os.getenv("MQTT_USER")
-MQTT_PASSWORD   = os.getenv("MQTT_PASSWORD")
-CONFIRM_TIMEOUT = int(os.getenv("CONFIRM_TIMEOUT", 5))
-PING_TIMEOUT    = int(os.getenv("PING_TIMEOUT", 20))  # ping all devices can take longer
+MQTT_BROKER            = os.getenv("MQTT_BROKER", "localhost")
+MQTT_PORT              = int(os.getenv("MQTT_PORT", 1883))
+MQTT_USER              = os.getenv("MQTT_USER")
+MQTT_PASSWORD          = os.getenv("MQTT_PASSWORD")
+CONFIRM_TIMEOUT        = int(os.getenv("CONFIRM_TIMEOUT", 5))
+PING_TIMEOUT           = int(os.getenv("PING_TIMEOUT", 20))
+DOSER_CONSULTA_TIMEOUT = int(os.getenv("DOSER_CONSULTA_TIMEOUT", 15))
+
+DOSER_MACHINES = ["321", "432", "543", "654"]
 
 # ── Auth ────────────────────────────────────────────
 API_TOKEN    = os.getenv("API_TOKEN")
@@ -47,19 +50,81 @@ class AcCommand(BaseModel):
     temperature: Literal["18", "22", "off"]
 
 class DoserCommand(BaseModel):
-    type: Literal["softener0", "softener1", "softener2", "am01-1", "am01-2", "am02-1", "am02-2", "eepromread"]
+    type: Literal[
+        "softener0", "softener1", "softener2", "softener3",
+        "am01-1", "am01-2", "am02-1", "am02-2",
+        "rele1on", "rele2on", "rele3on",
+        "consultasb01", "consultaam01", "consultaam02",
+        "eepromread", "status"
+    ]
+
+class DoserAmacianteCommand(BaseModel):
+    number: Optional[Literal[1, 2, 3]] = None
+    endpoint: Optional[str] = None
+
+class DoserDosagemCommand(BaseModel):
+    endpoint: Optional[Literal["am01-1", "am01-2", "am02-1", "am02-2"]] = None
+
+class DoserBombaCommand(BaseModel):
+    pump: Literal[1, 2, 3]
+
+class DoserSetTimeCommand(BaseModel):
+    rele: Literal[1, 2, 3]
+    seconds: float = Field(gt=0, le=3600)
+
+class DoserTimeAdjustCommand(BaseModel):
+    seconds: float = Field(gt=0, le=3600)
 
 
-# ── MQTT publish with confirmation ──────────────────
-def send_and_wait(topic_cmd: str, topic_status: str, payload: str) -> bool:
-    confirmed = threading.Event()
+def normalize_tempo_seconds(value) -> float:
+    """Converte valor do dispositivo (ms) para segundos. Valores < 100 já são segundos."""
+    num = float(str(value).strip())
+    if num >= 100:
+        num /= 1000.0
+    return round(num, 2)
+
+
+def format_tempo_output(seconds: float):
+    if seconds == int(seconds):
+        return int(seconds)
+    return seconds
+
+
+def convert_tempos_to_seconds(tempos: dict) -> dict:
+    return {
+        key: format_tempo_output(normalize_tempo_seconds(val))
+        for key, val in tempos.items()
+    }
+
+
+def format_seconds_payload(seconds: float) -> str:
+    if seconds == int(seconds):
+        return str(int(seconds))
+    return str(seconds)
+
+
+# ── MQTT helpers ────────────────────────────────────
+def mqtt_publish_and_get_response(
+    topic_cmd: str,
+    topic_status: str,
+    payload: str = "ping",
+    timeout: int = None
+) -> Union[dict, str, None]:
+    if timeout is None:
+        timeout = CONFIRM_TIMEOUT
+
+    result = {"data": None, "event": threading.Event()}
 
     def on_connect(client, userdata, flags, rc):
         if rc == 0:
             client.subscribe(topic_status)
 
     def on_message(client, userdata, msg):
-        confirmed.set()
+        try:
+            result["data"] = json.loads(msg.payload.decode())
+        except Exception:
+            result["data"] = msg.payload.decode()
+        result["event"].set()
 
     client = mqtt.Client()
     client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
@@ -70,32 +135,65 @@ def send_and_wait(topic_cmd: str, topic_status: str, payload: str) -> bool:
         client.connect(MQTT_BROKER, MQTT_PORT)
         client.loop_start()
         client.publish(topic_cmd, payload)
-        received = confirmed.wait(timeout=CONFIRM_TIMEOUT)
+        result["event"].wait(timeout=timeout)
         client.loop_stop()
         client.disconnect()
-        return received
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Failed to connect to MQTT broker: {str(e)}")
 
+    return result["data"]
 
-def publish_and_confirm(store: str, topic_suffix: str, payload: str, description: str):
-    topic_cmd    = f"{store}/{topic_suffix}"
-    topic_status = f"{store}/{topic_suffix}/status"
 
-    confirmed = send_and_wait(topic_cmd, topic_status, payload)
+def send_and_wait(topic_cmd: str, topic_status: str, payload: str, timeout: int = None) -> bool:
+    return mqtt_publish_and_get_response(topic_cmd, topic_status, payload, timeout) is not None
 
-    if not confirmed:
+
+def validate_doser_machine(machine: str) -> None:
+    if machine not in DOSER_MACHINES:
+        raise HTTPException(status_code=400, detail=f"Invalid machine. Use: {DOSER_MACHINES}")
+
+
+def publish_and_confirm(
+    store: str,
+    topic_suffix: str,
+    payload: str,
+    description: str,
+    timeout: int = None,
+    status_suffix: str = None,
+):
+    topic_cmd = f"{store}/{topic_suffix}"
+    status_topic = f"{store}/{status_suffix or topic_suffix}/status"
+
+    response = mqtt_publish_and_get_response(topic_cmd, status_topic, payload, timeout)
+
+    if response is None:
         raise HTTPException(
             status_code=400,
-            detail=f"ESP32 at store '{store}' did not respond within {CONFIRM_TIMEOUT}s. Check if it is online."
+            detail=f"ESP8266 at store '{store}' did not respond within {timeout or CONFIRM_TIMEOUT}s. Check if it is online."
         )
+
+    if response == "error":
+        raise HTTPException(status_code=400, detail=f"{description} failed at store '{store}'.")
 
     return {
         "store": store,
         "topic": topic_cmd,
         "payload": payload,
-        "message": f"{description} — confirmed by ESP32"
+        "response": response,
+        "message": f"{description} — confirmed by ESP8266"
     }
+
+
+def publish_doser_action(store: str, machine: str, action: str, payload: str, description: str, timeout: int = None):
+    # ESP8266 sempre publica resposta em {store}/doser/{machine}/status
+    return publish_and_confirm(
+        store,
+        f"doser/{machine}/{action}",
+        payload,
+        description,
+        timeout,
+        status_suffix=f"doser/{machine}",
+    )
 
 
 # ══════════════════════════════════════════════════════
@@ -159,7 +257,7 @@ def release_washer(store: str, machine: str, body: WasherCommand = WasherCommand
             "machine": machine,
             "doser": body.am,
             "washer": "released",
-            "message": f"Doser {body.am} + Washer {machine} — confirmed by ESP32"
+            "message": f"Doser {body.am} + Washer {machine} — confirmed by ESP8266"
         }
 
     return publish_and_confirm(store, f"washer/{machine}", "start", f"Washer {machine} released")
@@ -188,21 +286,164 @@ def control_ac(store: str, body: AcCommand, _: None = Security(verify_token)):
 
 
 # ══════════════════════════════════════════════════════
-# DOSER  →  {store}/doser/{machine}
+# DOSER  →  {store}/doser/{machine}[/{action}]
 # Machines: 321, 432, 543, 654
-# Types: softener0/1/2, am01-1/2, am02-1/2, eepromread
 # ══════════════════════════════════════════════════════
 @app.post("/{store}/doser/{machine}")
 def trigger_doser(store: str, machine: str, body: DoserCommand, _: None = Security(verify_token)):
-    valid_machines = ["321", "432", "543", "654"]
-    if machine not in valid_machines:
-        raise HTTPException(status_code=400, detail=f"Invalid machine. Use: {valid_machines}")
+    validate_doser_machine(machine)
     return publish_and_confirm(store, f"doser/{machine}", body.type, f"Doser {machine} — {body.type}")
+
+
+@app.post("/{store}/doser/{machine}/amaciante")
+def doser_amaciante(
+    store: str,
+    machine: str,
+    body: DoserAmacianteCommand = DoserAmacianteCommand(),
+    _: None = Security(verify_token)
+):
+    validate_doser_machine(machine)
+    if body.endpoint:
+        payload = body.endpoint
+    elif body.number is not None:
+        payload = str(body.number)
+    else:
+        payload = ""
+    return publish_doser_action(
+        store, machine, "amaciante", payload,
+        f"Doser {machine} — amaciante"
+    )
+
+
+@app.post("/{store}/doser/{machine}/dosagem")
+def doser_dosagem(
+    store: str,
+    machine: str,
+    body: DoserDosagemCommand = DoserDosagemCommand(),
+    _: None = Security(verify_token)
+):
+    validate_doser_machine(machine)
+    payload = body.endpoint or ""
+    return publish_doser_action(
+        store, machine, "dosagem", payload,
+        f"Doser {machine} — dosagem"
+    )
+
+
+@app.post("/{store}/doser/{machine}/bomba")
+def doser_bomba(store: str, machine: str, body: DoserBombaCommand, _: None = Security(verify_token)):
+    validate_doser_machine(machine)
+    return publish_doser_action(
+        store, machine, "bomba", str(body.pump),
+        f"Doser {machine} — bomba {body.pump}"
+    )
+
+
+@app.get("/{store}/doser/{machine}/consulta")
+def doser_consulta(store: str, machine: str, _: None = Security(verify_token)):
+    """Consulta tempos de sabão, floral e sport na dosadora."""
+    validate_doser_machine(machine)
+    response = mqtt_publish_and_get_response(
+        topic_cmd=f"{store}/doser/{machine}/consulta",
+        topic_status=f"{store}/doser/{machine}/status",
+        payload="ping",
+        timeout=DOSER_CONSULTA_TIMEOUT
+    )
+
+    if response is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ESP8266 at store '{store}' did not respond within {DOSER_CONSULTA_TIMEOUT}s."
+        )
+
+    if response == "error" or not isinstance(response, dict):
+        raise HTTPException(status_code=400, detail=f"Doser consulta failed for machine '{machine}'.")
+
+    return {
+        "store": store,
+        "machine": machine,
+        "tempos": convert_tempos_to_seconds(response)
+    }
+
+
+@app.post("/{store}/doser/{machine}/settime")
+def doser_settime(store: str, machine: str, body: DoserSetTimeCommand, _: None = Security(verify_token)):
+    validate_doser_machine(machine)
+    payload = f"{body.rele}:{format_seconds_payload(body.seconds)}"
+    return publish_doser_action(
+        store, machine, "settime", payload,
+        f"Doser {machine} — settime rele {body.rele} ({body.seconds}s)"
+    )
+
+
+@app.post("/{store}/doser/{machine}/settime/sabao")
+def doser_settime_sabao(
+    store: str,
+    machine: str,
+    body: DoserTimeAdjustCommand,
+    _: None = Security(verify_token)
+):
+    validate_doser_machine(machine)
+    return publish_doser_action(
+        store, machine, "settime", f"1:{format_seconds_payload(body.seconds)}",
+        f"Doser {machine} — tempo sabão ({body.seconds}s)"
+    )
+
+
+@app.post("/{store}/doser/{machine}/settime/floral")
+def doser_settime_floral(
+    store: str,
+    machine: str,
+    body: DoserTimeAdjustCommand,
+    _: None = Security(verify_token)
+):
+    validate_doser_machine(machine)
+    return publish_doser_action(
+        store, machine, "settime", f"2:{format_seconds_payload(body.seconds)}",
+        f"Doser {machine} — tempo floral ({body.seconds}s)"
+    )
+
+
+@app.post("/{store}/doser/{machine}/settime/sport")
+def doser_settime_sport(
+    store: str,
+    machine: str,
+    body: DoserTimeAdjustCommand,
+    _: None = Security(verify_token)
+):
+    validate_doser_machine(machine)
+    return publish_doser_action(
+        store, machine, "settime", f"3:{format_seconds_payload(body.seconds)}",
+        f"Doser {machine} — tempo sport ({body.seconds}s)"
+    )
+
+
+@app.get("/{store}/doser/{machine}/device-status")
+def doser_device_status(store: str, machine: str, _: None = Security(verify_token)):
+    """Verifica conectividade HTTP da dosadora via GET /status no dispositivo."""
+    validate_doser_machine(machine)
+    response = mqtt_publish_and_get_response(
+        topic_cmd=f"{store}/doser/{machine}/status",
+        topic_status=f"{store}/doser/{machine}/status",
+        payload="ping"
+    )
+
+    if response is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ESP8266 at store '{store}' did not respond within {CONFIRM_TIMEOUT}s."
+        )
+
+    return {
+        "store": store,
+        "machine": machine,
+        "online": response == "online"
+    }
 
 
 # ══════════════════════════════════════════════════════
 # STATUS / PING  →  {store}/ping/{device}
-# ESP8266 faz TCP connect na porta 80 de cada dispositivo
+# ESP8266 verifica dispositivos via ICMP (dosadoras: HTTP /status + ICMP)
 # ══════════════════════════════════════════════════════
 
 def ping_and_wait(store: str, topic_suffix: str, timeout: int = None) -> dict:
@@ -210,40 +451,19 @@ def ping_and_wait(store: str, topic_suffix: str, timeout: int = None) -> dict:
     if timeout is None:
         timeout = CONFIRM_TIMEOUT
 
-    result = {"data": None, "event": threading.Event()}
+    data = mqtt_publish_and_get_response(
+        topic_cmd=f"{store}/{topic_suffix}",
+        topic_status=f"{store}/{topic_suffix}/status",
+        payload="ping",
+        timeout=timeout
+    )
 
-    def on_connect(client, userdata, flags, rc):
-        if rc == 0:
-            client.subscribe(f"{store}/{topic_suffix}/status")
-
-    def on_message(client, userdata, msg):
-        try:
-            result["data"] = json.loads(msg.payload.decode())
-        except Exception:
-            result["data"] = msg.payload.decode()
-        result["event"].set()
-
-    client = mqtt.Client()
-    client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
-    client.on_connect = on_connect
-    client.on_message = on_message
-
-    try:
-        client.connect(MQTT_BROKER, MQTT_PORT)
-        client.loop_start()
-        client.publish(f"{store}/{topic_suffix}", "ping")
-        result["event"].wait(timeout=timeout)
-        client.loop_stop()
-        client.disconnect()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Failed to connect to MQTT broker: {str(e)}")
-
-    if result["data"] is None:
+    if data is None:
         raise HTTPException(
             status_code=400,
             detail=f"ESP8266 at store '{store}' did not respond within {timeout}s."
         )
-    return result["data"]
+    return data
 
 
 @app.get("/{store}/status")
@@ -275,7 +495,5 @@ def status_ac(store: str, _: None = Security(verify_token)):
 
 @app.get("/{store}/status/doser/{machine}")
 def status_doser(store: str, machine: str, _: None = Security(verify_token)):
-    valid_machines = ["321", "432", "543", "654"]
-    if machine not in valid_machines:
-        raise HTTPException(status_code=400, detail=f"Invalid machine. Use: {valid_machines}")
+    validate_doser_machine(machine)
     return ping_and_wait(store, f"ping/doser/{machine}")
