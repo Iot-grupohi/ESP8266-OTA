@@ -18,6 +18,8 @@
 #define VERSION_URL  GH_BASE "/version.txt"
 #define FIRMWARE_URL GH_BASE "/firmware.bin"
 
+#define DOSER_HTTP_TIMEOUT_MS 3000
+
 const int LED_PIN = 2;
 #define LED_ON  LOW
 #define LED_OFF HIGH
@@ -61,14 +63,30 @@ void updateStatusLed() {
   }
 }
 
-bool httpGet(String url) {
+bool httpGet(String url, uint16_t timeoutMs = 10000) {
   WiFiClient httpClient;
   HTTPClient http;
   http.begin(httpClient, url);
-  http.setTimeout(10000);
+  http.setTimeout(timeoutMs);
   int code = http.GET();
   http.end();
   return (code >= 200 && code < 400) || code == 303;
+}
+
+bool httpGetText(const String& url, String& out, uint16_t timeoutMs = 10000) {
+  WiFiClient httpClient;
+  HTTPClient http;
+  http.begin(httpClient, url);
+  http.setTimeout(timeoutMs);
+  const int code = http.GET();
+  if (code >= 200 && code < 400) {
+    out = http.getString();
+    out.trim();
+    http.end();
+    return true;
+  }
+  http.end();
+  return false;
 }
 
 bool icmpPing(const char* ip) {
@@ -87,6 +105,207 @@ int findIndex(char ids[][8], int count, String id) {
     if (id == ids[i]) return i;
   }
   return -1;
+}
+
+String doserBaseUrl(int idx) {
+  return "http://" + String(cfg.ipDos[idx]);
+}
+
+void publishDoserStatus(const String& maq, const String& payload) {
+  client.publish((BASE + "/doser/" + maq + "/status").c_str(), payload.c_str());
+}
+
+bool doserOnline(int idx) {
+  if (httpGet(doserBaseUrl(idx) + "/status", DOSER_HTTP_TIMEOUT_MS)) return true;
+  return icmpPing(cfg.ipDos[idx]);
+}
+
+String formatSeconds(float sec) {
+  long scaled = (long)(sec * 100.0f + 0.5f);
+  const long whole = scaled / 100;
+  long frac = scaled % 100;
+  if (frac < 0) frac = -frac;
+
+  if (frac == 0) return String(whole);
+
+  if (frac % 10 == 0) return String(whole) + "." + String(frac / 10);
+
+  String fracStr = String(frac);
+  if (frac < 10) fracStr = "0" + fracStr;
+  return String(whole) + "." + fracStr;
+}
+
+String msToSecondsJson(const String& rawMs) {
+  return formatSeconds(rawMs.toFloat() / 1000.0f);
+}
+
+bool doserConsultaTempos(int idx, String& jsonOut) {
+  String sabao, floral, sport;
+  const String base = doserBaseUrl(idx);
+  const bool okS = httpGetText(base + "/consultasb01", sabao, DOSER_HTTP_TIMEOUT_MS);
+  const bool okF = httpGetText(base + "/consultaam01", floral, DOSER_HTTP_TIMEOUT_MS);
+  const bool okP = httpGetText(base + "/consultaam02", sport, DOSER_HTTP_TIMEOUT_MS);
+
+  if (!okS || !okF || !okP) return false;
+
+  jsonOut = "{\"sabao\":" + msToSecondsJson(sabao)
+          + ",\"floral\":" + msToSecondsJson(floral)
+          + ",\"sport\":" + msToSecondsJson(sport) + "}";
+  return true;
+}
+
+bool doserSetTime(int idx, int rele, float segundos) {
+  if (rele < 1 || rele > 3 || segundos <= 0.0f) return false;
+  const unsigned long ms = (unsigned long)(segundos * 1000.0f + 0.5f);
+  const String url = doserBaseUrl(idx) + "/settime?rele=" + String(rele) + "&time=" + String(ms);
+  return httpGet(url, DOSER_HTTP_TIMEOUT_MS);
+}
+
+// ── Dosadoras (API_ENDPOINTS.md §1.3) ───────────────
+// HTTP: /status, /am01-1, /softener{N}, /rele{N}on,
+//       /consultasb01, /consultaam01, /consultaam02,
+//       /settime?rele={N}&time={ms}
+//
+// MQTT direto:  {loja}/doser/{id}           payload = endpoint (ex: am01-1, softener2)
+// MQTT subtopic:{loja}/doser/{id}/amaciante payload = N ou nome do endpoint
+//               {loja}/doser/{id}/dosagem   payload = endpoint (padrao am01-1)
+//               {loja}/doser/{id}/bomba     payload = 1|2|3
+//               {loja}/doser/{id}/consulta  consulta os 3 tempos
+//               {loja}/doser/{id}/settime   payload = rele:segundos (ex: 1:2.5)
+//               {loja}/doser/{id}/status    GET /status
+bool handleDoser(const String& path, const String& msg) {
+  if (!path.startsWith("doser/")) return false;
+
+  const String rest = path.substring(6);
+  const int slash = rest.indexOf('/');
+  const String maq = (slash >= 0) ? rest.substring(0, slash) : rest;
+  const String action = (slash >= 0) ? rest.substring(slash + 1) : "";
+
+  const int idx = findIndex(cfg.idDos, CFG_MACHINES, maq);
+  if (idx < 0) {
+    publishDoserStatus(maq, "error");
+    return true;
+  }
+
+  const String base = doserBaseUrl(idx);
+  bool ok = false;
+
+  if (action == "bomba") {
+    const int n = msg.toInt();
+    if (n < 1 || n > 3) {
+      publishDoserStatus(maq, "error");
+      return true;
+    }
+    ok = httpGet(base + "/rele" + String(n) + "on", DOSER_HTTP_TIMEOUT_MS);
+    Serial.printf("[HTTP] doser %s bomba %d → %s\n", maq.c_str(), n, ok ? "OK" : "FAIL");
+    publishDoserStatus(maq, ok ? "ok" : "error");
+    return true;
+  }
+
+  if (action == "amaciante") {
+    String endpoint;
+    const int n = msg.toInt();
+    if (n > 0) {
+      endpoint = "softener" + String(n);
+    } else if (msg.length() > 0) {
+      endpoint = msg;
+    } else {
+      endpoint = "softener1";
+    }
+    ok = httpGet(base + "/" + endpoint, DOSER_HTTP_TIMEOUT_MS);
+    Serial.printf("[HTTP] doser %s amaciante /%s → %s\n", maq.c_str(), endpoint.c_str(), ok ? "OK" : "FAIL");
+    publishDoserStatus(maq, ok ? "ok" : "error");
+    return true;
+  }
+
+  if (action == "dosagem") {
+    const String endpoint = (msg.length() > 0) ? msg : "am01-1";
+    ok = httpGet(base + "/" + endpoint, DOSER_HTTP_TIMEOUT_MS);
+    Serial.printf("[HTTP] doser %s dosagem /%s → %s\n", maq.c_str(), endpoint.c_str(), ok ? "OK" : "FAIL");
+    publishDoserStatus(maq, ok ? "ok" : "error");
+    return true;
+  }
+
+  if (action == "consulta" || action == "consulta_tempo") {
+    String json;
+    ok = doserConsultaTempos(idx, json);
+    Serial.printf("[HTTP] doser %s consulta → %s\n", maq.c_str(), ok ? "OK" : "FAIL");
+    publishDoserStatus(maq, ok ? json : "error");
+    return true;
+  }
+
+  if (action == "settime") {
+    const int sep = msg.indexOf(':');
+    if (sep < 0) {
+      publishDoserStatus(maq, "error");
+      return true;
+    }
+    const int rele = msg.substring(0, sep).toInt();
+    const float segundos = msg.substring(sep + 1).toFloat();
+    ok = doserSetTime(idx, rele, segundos);
+    Serial.printf("[HTTP] doser %s settime rele=%d %.2fs → %s\n",
+                  maq.c_str(), rele, segundos, ok ? "OK" : "FAIL");
+    publishDoserStatus(maq, ok ? "ok" : "error");
+    return true;
+  }
+
+  if (action == "status") {
+    ok = httpGet(base + "/status", DOSER_HTTP_TIMEOUT_MS);
+    publishDoserStatus(maq, ok ? "online" : "offline");
+    return true;
+  }
+
+  if (action.length() == 0) {
+    String endpoint = msg;
+
+    if (msg.startsWith("bomba:")) {
+      const int n = msg.substring(6).toInt();
+      if (n >= 1 && n <= 3) endpoint = "rele" + String(n) + "on";
+    } else if (msg.startsWith("amaciante:")) {
+      const int n = msg.substring(10).toInt();
+      endpoint = (n > 0) ? "softener" + String(n) : "softener1";
+    } else if (msg == "consulta" || msg == "consulta_tempo") {
+      String json;
+      ok = doserConsultaTempos(idx, json);
+      publishDoserStatus(maq, ok ? json : "error");
+      return true;
+    } else if (msg.startsWith("settime:")) {
+      const String params = msg.substring(8);
+      const int sep = params.indexOf(':');
+      if (sep < 0) {
+        publishDoserStatus(maq, "error");
+        return true;
+      }
+      ok = doserSetTime(idx, params.substring(0, sep).toInt(), params.substring(sep + 1).toFloat());
+      publishDoserStatus(maq, ok ? "ok" : "error");
+      return true;
+    } else if (msg.startsWith("ajuste_tempo_sabao:")) {
+      ok = doserSetTime(idx, 1, msg.substring(19).toFloat());
+      publishDoserStatus(maq, ok ? "ok" : "error");
+      return true;
+    } else if (msg.startsWith("ajuste_tempo_floral:")) {
+      ok = doserSetTime(idx, 2, msg.substring(20).toFloat());
+      publishDoserStatus(maq, ok ? "ok" : "error");
+      return true;
+    } else if (msg.startsWith("ajuste_tempo_sport:")) {
+      ok = doserSetTime(idx, 3, msg.substring(19).toFloat());
+      publishDoserStatus(maq, ok ? "ok" : "error");
+      return true;
+    }
+
+    if (endpoint.length() == 0) {
+      publishDoserStatus(maq, "error");
+      return true;
+    }
+
+    ok = httpGet(base + "/" + endpoint, DOSER_HTTP_TIMEOUT_MS);
+    Serial.printf("[HTTP] doser %s /%s → %s\n", maq.c_str(), endpoint.c_str(), ok ? "OK" : "FAIL");
+    publishDoserStatus(maq, ok ? "ok" : "error");
+    return true;
+  }
+
+  publishDoserStatus(maq, "error");
+  return true;
 }
 
 // ── Pagina de configuracao ───────────────────────────
@@ -463,16 +682,7 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
     return;
   }
 
-  if (path.startsWith("doser/")) {
-    String maq = path.substring(6);
-    int idx = findIndex(cfg.idDos, CFG_MACHINES, maq);
-    if (idx >= 0) {
-      ok = httpGet("http://" + String(cfg.ipDos[idx]) + "/" + msg);
-      Serial.printf("[HTTP] doser %s → %s\n", maq.c_str(), ok ? "OK" : "FAIL");
-    }
-    client.publish((BASE + "/doser/" + maq + "/status").c_str(), ok ? "ok" : "error");
-    return;
-  }
+  if (handleDoser(path, msg)) return;
 
   if (path.startsWith("ping/")) {
     String sub = path.substring(5);
@@ -494,7 +704,7 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
       }
       json += "},\"ac\":" + String(icmpPing(cfg.ipAc) ? "true" : "false") + ",\"dosers\":{";
       for (int i = 0; i < CFG_MACHINES; i++) {
-        bool on = icmpPing(cfg.ipDos[i]);
+        bool on = doserOnline(i);
         json += "\"" + String(cfg.idDos[i]) + "\":" + (on ? "true" : "false");
         if (i < CFG_MACHINES - 1) json += ",";
       }
@@ -528,7 +738,7 @@ void callback(char* topicRaw, byte* payload, unsigned int length) {
     if (sub.startsWith("doser/")) {
       String maq = sub.substring(6);
       int idx = findIndex(cfg.idDos, CFG_MACHINES, maq);
-      bool on = (idx >= 0) ? icmpPing(cfg.ipDos[idx]) : false;
+      bool on = (idx >= 0) ? doserOnline(idx) : false;
       publishDeviceStatus(BASE + "/ping/doser/" + maq + "/status", maq.c_str(), on);
       return;
     }
